@@ -21,8 +21,14 @@ mcp>=1.0.0
 # Streamlit (开发/演示用)
 streamlit>=1.40.0
 
-# Config & Logging
+# Config
 python-dotenv>=1.0.0
+
+# DashScope SDK (阿里百炼 API)
+dashscope>=1.20.0
+
+# 中文分词 (BM25)
+jieba>=0.42.0
 
 # Testing
 pytest>=8.0.0
