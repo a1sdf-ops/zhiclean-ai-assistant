@@ -213,10 +213,11 @@ class TestKnowledgeBaseReady:
 
     @requires_api
     def test_knowledge_base_has_data(self):
-        """确保知识库中有数据才能做检索评测"""
+        """检查知识库，无数据时 skip 而非 fail（CI 环境无数据是正常的）"""
         vector_store = _get_vector_store()
         has_data, count = _check_kb_has_data(vector_store)
-        assert has_data, "知识库为空，请先上传文档: python RAG部分/demo.py 然后选择上传 docs/*.txt 文件"
+        if not has_data:
+            pytest.skip("知识库为空（CI 环境无预上传数据），跳过评测类测试")
         print(f"\n  知识库文档块数: {count}")
 
 
