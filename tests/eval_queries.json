@@ -1,0 +1,177 @@
+[
+  {
+    "id": 1,
+    "query": "机器人无法开机怎么办",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["充电桩", "电源键", "充电30分钟"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 2,
+    "query": "清洁效果差地面有残留灰尘怎么处理",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["吸力", "尘盒", "滤网", "主刷"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 3,
+    "query": "拖地不出水是什么原因",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["水箱", "出水孔", "水量设置"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 4,
+    "query": "App连接不上Wi-Fi怎么解决",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["2.4GHz", "配网", "重置Wi-Fi"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 5,
+    "query": "机器人回充失败找不到基站",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["充电触点", "红外", "重新建图"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 6,
+    "query": "扫地机器人噪音突然变大",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["主刷", "异物", "电机", "集尘袋"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 7,
+    "query": "机器人有异味怎么处理",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["尘盒", "水箱", "拖布", "集尘袋"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 8,
+    "query": "滤网要怎么保养和清洗",
+    "relevant_sources": ["保养维护指南.txt"],
+    "expected_keywords": ["轻敲", "清水冲洗", "晾干", "水洗3次"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 9,
+    "query": "主刷多久更换一次价格多少",
+    "relevant_sources": ["保养维护指南.txt"],
+    "expected_keywords": ["6-8个月", "49元"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 10,
+    "query": "扫地机器人长期不用怎么存放",
+    "relevant_sources": ["保养维护指南.txt"],
+    "expected_keywords": ["充满电", "关机", "补电", "干燥"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 11,
+    "query": "边刷什么情况需要更换",
+    "relevant_sources": ["保养维护指南.txt"],
+    "expected_keywords": ["刷毛", "磨损", "弹性", "3-4个月"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 12,
+    "query": "扫地机器人保修期多久",
+    "relevant_sources": ["售后服务政策.txt"],
+    "expected_keywords": ["2年", "主机", "电池1年"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 13,
+    "query": "怎么申请售后服务",
+    "relevant_sources": ["售后服务政策.txt"],
+    "expected_keywords": ["App内客服", "400-810-6688", "顺丰上门取件"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 14,
+    "query": "延保服务多少钱怎么购买",
+    "relevant_sources": ["售后服务政策.txt"],
+    "expected_keywords": ["99元", "169元", "延保1年"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 15,
+    "query": "配件在哪些渠道可以买到",
+    "relevant_sources": ["售后服务政策.txt"],
+    "expected_keywords": ["App内商城", "天猫", "京东自营", "配件套餐"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 16,
+    "query": "Z2 Pro吸力多大电池容量多少",
+    "relevant_sources": ["Z2_Pro_产品手册.txt"],
+    "expected_keywords": ["6800Pa", "5200mAh", "250m²"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 17,
+    "query": "Z2 Pro支持哪些语音助手",
+    "relevant_sources": ["Z2_Pro_产品手册.txt"],
+    "expected_keywords": ["小爱同学", "天猫精灵", "小度"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 18,
+    "query": "Z2 Pro有哪些核心功能",
+    "relevant_sources": ["Z2_Pro_产品手册.txt"],
+    "expected_keywords": ["扫拖同步", "自动集尘", "地毯识别", "断点续扫"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 19,
+    "query": "Z3 Ultra和Z2 Pro有什么区别",
+    "relevant_sources": ["Z3_Ultra_新品发布.txt"],
+    "expected_keywords": ["8800Pa", "AI视觉", "自清洁基站", "5299元"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 20,
+    "query": "Z3 Ultra摄像头会泄露隐私吗",
+    "relevant_sources": ["Z3_Ultra_新品发布.txt"],
+    "expected_keywords": ["AI芯片", "不上传云端", "TÜV隐私安全认证"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 21,
+    "query": "Z3 Ultra上下水版本安装需要什么条件",
+    "relevant_sources": ["Z3_Ultra_新品发布.txt"],
+    "expected_keywords": ["进水口", "排水口", "3米以内", "30分钟"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 22,
+    "query": "电池健康度低于多少需要更换",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["80%", "电池健康度"],
+    "difficulty": "hard"
+  },
+  {
+    "id": 23,
+    "query": "以旧换新Z2 Pro能折抵多少钱",
+    "relevant_sources": ["Z3_Ultra_新品发布.txt", "售后服务政策.txt"],
+    "expected_keywords": ["500元", "折抵"],
+    "difficulty": "hard"
+  },
+  {
+    "id": 24,
+    "query": "悬崖传感器被遮挡会导致什么问题",
+    "relevant_sources": ["常见故障排查.txt"],
+    "expected_keywords": ["跌落", "台阶", "防跌落"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 25,
+    "query": "集尘袋多久更换一次",
+    "relevant_sources": ["保养维护指南.txt", "Z2_Pro_产品手册.txt"],
+    "expected_keywords": ["60-90天", "2-3个月"],
+    "difficulty": "hard"
+  }
+]

@@ -1,0 +1,88 @@
+[project]
+name = "zhiclean-ai-assistant"
+version = "2.0.0"
+description = "Intelligent after-sales service platform with custom LangGraph StateGraph, BM25+vector hybrid retrieval, and cross-language MCP integration."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Chen Lei", email = "chenlei@example.com"},
+]
+keywords = [
+    "llm",
+    "rag",
+    "langgraph",
+    "mcp",
+    "bm25",
+    "hybrid-search",
+    "reranker",
+    "fastapi",
+    "agent",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Go",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-community>=0.3.0",
+    "langchain-chroma>=0.2.0",
+    "langchain-text-splitters>=0.3.0",
+    "langgraph>=0.3.0",
+    "chromadb>=0.6.0",
+    "sentence-transformers>=3.0.0",
+    "mcp>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "streamlit>=1.40.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/A1SDF-OPS/zhiclean-ai-assistant"
+Repository = "https://github.com/A1SDF-OPS/zhiclean-ai-assistant"
+Issues = "https://github.com/A1SDF-OPS/zhiclean-ai-assistant/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "no_api: tests that do not require API key",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "F401",   # unused import (many intentional re-exports)
+    "F841",   # unused variable (common in test fixtures)
+    "N999",   # Chinese directory names (RAG部分, agent部分)
+    "N806",   # uppercase variable N in BM25 formula (standard notation)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F841", "N802", "N803"]
+"agent部分/*" = ["F401"]
+"RAG部分/*" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
