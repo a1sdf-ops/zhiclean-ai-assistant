@@ -25,8 +25,10 @@ if _is_placeholder(DASHSCOPE_API_KEY):
     DASHSCOPE_API_KEY = ""  # 置空，让后续检查统一报错
 
 if not DASHSCOPE_API_KEY:
-    raise ValueError(
-        "未检测到有效的 DASHSCOPE_API_KEY。请任选一种方式配置：\n"
+    import warnings
+
+    warnings.warn(
+        "未检测到 DASHSCOPE_API_KEY —— 跳过所有需要 API 的测试。"
         "  1) 系统环境变量: export/set DASHSCOPE_API_KEY=sk-xxx\n"
         "  2) 项目 .env 文件: 编辑项目根目录 .env，写入 DASHSCOPE_API_KEY=sk-xxx\n"
         "  免费申请: https://bailian.console.aliyun.com/"
