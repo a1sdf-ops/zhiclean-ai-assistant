@@ -2,7 +2,7 @@
 MCP 多服务器客户端 — 管理多个 MCP Server 的 JSON-RPC over stdio 连接
 
 支持的 MCP Server:
-  - knowledge-base: RAG部分/mcp_server.py（7 个知识库工具）
+  - knowledge-base: rag/mcp_server.py（7 个知识库工具）
   - weather:       go-weather-server（Go 实现，1 个天气工具）
 """
 

@@ -43,7 +43,7 @@ EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # ============ 路径 ============
-RAG_DIR = os.path.join(PROJECT_ROOT, "RAG部分")
+RAG_DIR = os.path.join(PROJECT_ROOT, "rag")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 CHROMA_PERSIST_DIR = os.path.join(DATA_DIR, "chroma_db")
@@ -76,6 +76,14 @@ RRF_K = 60  # RRF 融合排名阻尼系数
 
 # ============ Agent ============
 OPERATOR_NAME = os.getenv("OPERATOR_NAME", "admin")
+
+# ============ Redis ============
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+SHORT_MEM_TTL_HOURS = int(os.getenv("SHORT_MEM_TTL_HOURS", "72"))
+DECAY_FACTOR = float(os.getenv("DECAY_FACTOR", "0.95"))
+MIN_WEIGHT = float(os.getenv("MIN_WEIGHT", "0.1"))
 
 # ============ Memory ============
 ENABLE_MEMORY = True  # 启用 Agent 长期记忆

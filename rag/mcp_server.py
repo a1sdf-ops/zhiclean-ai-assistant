@@ -16,7 +16,7 @@
   python mcp_server.py
 
 在 Claude Code 中配置:
-  claude mcp add knowledge-base -- python "D:\\桌面\\...\\RAG部分\\mcp_server.py"
+  claude mcp add knowledge-base -- python "D:\\桌面\\...\\rag\\mcp_server.py"
 """
 
 import asyncio
@@ -31,8 +31,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from RAG部分.knowledge_base import KnowledgeBaseService
-from RAG部分.rag import RagService
+from rag.knowledge_base import KnowledgeBaseService
+from rag.rag import RagService
 from utils.logger_handler import logger
 
 app = Server("knowledge-base-mcp")

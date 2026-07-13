@@ -84,7 +84,7 @@ def precision_at_k(results, relevant_sources, k):
 
 def _get_vector_store():
     from model.factory import create_embedding_model
-    from RAG部分.vector_stores import VectorStoreService
+    from rag.vector_stores import VectorStoreService
 
     return VectorStoreService(embedding=create_embedding_model())
 
@@ -101,7 +101,7 @@ def _check_kb_has_data(vector_store):
 def _retrieve_bm25(query, top_k=8):
     """纯 BM25 检索"""
     vector_store = _get_vector_store()
-    from RAG部分.bm25 import BM25Retriever
+    from rag.bm25 import BM25Retriever
 
     all_data = vector_store.vector_store.get(include=["documents", "metadatas"])
     texts = all_data.get("documents", [])
@@ -130,7 +130,7 @@ def _retrieve_vector(query, top_k=8):
 def _retrieve_hybrid(query, top_k=8):
     """混合检索 (BM25 + Vector + RRF)"""
     vector_store = _get_vector_store()
-    from RAG部分.hybrid_retriever import HybridRetriever
+    from rag.hybrid_retriever import HybridRetriever
 
     hr = HybridRetriever(vector_store.vector_store)
     return hr.search(query, top_k=top_k)
@@ -139,7 +139,7 @@ def _retrieve_hybrid(query, top_k=8):
 def _retrieve_hybrid_rerank(query, top_k=8):
     """混合检索 + Reranker"""
     docs = _retrieve_hybrid(query, top_k=top_k * 2)
-    from RAG部分.rerank import Rerank
+    from rag.rerank import Rerank
 
     reranker = Rerank()
     return reranker.rerank_documents(query, docs)[:top_k]

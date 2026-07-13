@@ -12,10 +12,10 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough, Runnab
 
 import config
 from model.factory import create_chat_model, create_embedding_model
-from RAG部分.file_history_store import get_history
-from RAG部分.hybrid_retriever import HybridRetriever
-from RAG部分.rerank import Rerank
-from RAG部分.vector_stores import VectorStoreService
+from rag.file_history_store import get_history
+from rag.hybrid_retriever import HybridRetriever
+from rag.rerank import Rerank
+from rag.vector_stores import VectorStoreService
 
 
 class RagService:

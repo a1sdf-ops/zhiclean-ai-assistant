@@ -2,7 +2,7 @@
 知识库 RAG 问答系统 - 命令行交互式入口
 
 运行方式：在项目根目录下执行
-    python RAG部分/demo.py
+    python rag/demo.py
 
 前提：已配置 .env 中的 DASHSCOPE_API_KEY，并已上传 docs/ 下的知识文档
 """
@@ -12,8 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from RAG部分.knowledge_base import KnowledgeBaseService
-from RAG部分.rag import RagService
+from rag.knowledge_base import KnowledgeBaseService
+from rag.rag import RagService
 
 
 def main():

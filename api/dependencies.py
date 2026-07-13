@@ -11,20 +11,20 @@ if _project_root not in sys.path:
 
 @lru_cache
 def get_rag_service():
-    from RAG部分.rag import RagService
+    from rag.rag import RagService
 
     return RagService()
 
 
 @lru_cache
 def get_kb_service():
-    from RAG部分.knowledge_base import KnowledgeBaseService
+    from rag.knowledge_base import KnowledgeBaseService
 
     return KnowledgeBaseService()
 
 
 @lru_cache
 def get_agent():
-    from agent部分.react_agent import ReactAgent
+    from agent.react_agent import ReactAgent
 
     return ReactAgent()

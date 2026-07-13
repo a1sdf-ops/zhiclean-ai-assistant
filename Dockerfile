@@ -14,7 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# PyPI 源可配置：默认官方源；国内构建可传 --build-arg PIP_INDEX_URL=<清华镜像> 提速
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir --timeout 300 --retries 10 \
+    --index-url ${PIP_INDEX_URL} -r requirements.txt
 
 COPY . .
 

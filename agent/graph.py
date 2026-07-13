@@ -6,30 +6,31 @@
 import json
 import os
 import sys
+import time
 from typing import Literal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 
-from agent部分.agent_tools import (
+import config
+from agent.agent_tools import (
     delete_knowledge,
     list_knowledge,
     search_knowledge,
-    update_knowledge,
-    update_knowledge_file,
     upload_knowledge,
     upload_knowledge_file,
 )
-from agent部分.mcp_client import get_mcp_manager
-from agent部分.state import AgentState
-from agent部分.tools.external_tools import (
+from agent.mcp_client import get_mcp_manager
+from agent.memory_store import LongTermMemory, ShortTermMemory
+from agent.state import AgentState
+from agent.token_tracker import get_tracker, estimate_tokens
+from agent.tools.external_tools import (
     fetch_external_data,
     fill_context_for_report,
     get_current_month,
     get_user_id,
-    get_user_location,
     get_weather,
 )
 from model.factory import create_chat_model
@@ -37,6 +38,8 @@ from utils.logger_handler import logger
 from utils.memory import MemoryManager
 
 _memory_manager = None
+_short_memory = None
+_long_memory = None
 
 
 def get_memory() -> MemoryManager:
@@ -44,6 +47,20 @@ def get_memory() -> MemoryManager:
     if _memory_manager is None:
         _memory_manager = MemoryManager()
     return _memory_manager
+
+
+def get_short_memory() -> ShortTermMemory:
+    global _short_memory
+    if _short_memory is None:
+        _short_memory = ShortTermMemory()
+    return _short_memory
+
+
+def get_long_memory() -> LongTermMemory:
+    global _long_memory
+    if _long_memory is None:
+        _long_memory = LongTermMemory()
+    return _long_memory
 
 
 # ---------- 意图分类 ----------
@@ -125,15 +142,70 @@ def _parse_intent_response(raw: str) -> dict:
 
 
 def recall_memory(state: AgentState) -> dict:
-    """节点: 召回相关长期记忆，注入 memory_context"""
+    """节点: 召回相关记忆（Redis短期上下文 + ChromaDB长期语义 + Redis长期重要性）
+
+    双通道长期记忆召回:
+      1. Redis Hash → 最近几轮对话的意图/设备/话题（精准，快）
+      2. ChromaDB → 与当前 query 语义相关的长期偏好（相关性通道，模糊匹配）
+      3. Redis Sorted Set → 权重最高的偏好 TopK（重要性通道，与 query 无关，快）
+      4. 去重合并后注入 memory_context 供后续节点使用
+
+    相关性通道(Chroma)保证"贴合此刻话题"，重要性通道(SortedSet)保证"永远重要的
+    骨干不被漏掉"；两条互补，Sorted Set 命中已在语义结果中的事实会被去重跳过。
+    """
     last_msg = state["messages"][-1]
     query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
 
-    memory = get_memory()
-    context = memory.recall(query)
+    tenant_id = state.get("tenant_id", "default")
+    session_id = state.get("session_id", "default")
 
-    if context:
-        context = "用户历史记忆（可能相关，供参考）:\n" + context + "\n"
+    context_parts = []
+    short_ctx = None
+
+    # ── 1. Redis 短期上下文 ──
+    try:
+        stm = get_short_memory()
+        short_ctx = stm.load(tenant_id, session_id)
+        if short_ctx:
+            recent = short_ctx.get("recent_msgs", [])
+            last_intent = short_ctx.get("last_intent", "")
+            if recent:
+                msgs_text = " | ".join(
+                    f"{m.get('role','')}: {str(m.get('content',''))[:80]}"
+                    for m in recent[-3:]  # 只取最近3轮
+                )
+                context_parts.append(f"[短期上下文] 最近对话: {msgs_text}")
+            if last_intent:
+                context_parts.append(f"[上次意图] {last_intent}")
+    except Exception as e:
+        logger.warning("Redis短期记忆读取失败: %s", e)
+
+    # ── 2. ChromaDB 长期语义召回（相关性通道）──
+    memory = get_memory()
+    semantic_ctx = memory.recall(query, session_id=session_id)
+    if semantic_ctx:
+        context_parts.append(f"[长期语义记忆]\n{semantic_ctx}")
+
+    # ── 3. Redis Sorted Set 长期偏好 TopK（重要性通道）──
+    important_ctx = None
+    try:
+        ltm = get_long_memory()
+        top_facts = ltm.topk(tenant_id, session_id, k=config.MEMORY_TOP_K)
+        # 去重: 语义通道已召回的事实不再重复注入
+        fresh = [(fact, score) for fact, score in top_facts if fact and fact not in semantic_ctx]
+        if fresh:
+            important_ctx = "\n".join(f"[权重:{score}] {fact}" for fact, score in fresh)
+            context_parts.append(f"[长期重要偏好]\n{important_ctx}")
+    except Exception as e:
+        logger.warning("Redis长期记忆读取失败: %s", e)
+
+    context = "\n".join(context_parts) if context_parts else ""
+
+    logger.info("记忆召回: short=%s semantic=%s important=%s trace=%s",
+                 "有" if short_ctx else "无",
+                 "有" if semantic_ctx else "无",
+                 "有" if important_ctx else "无",
+                 state.get("trace_id", ""))
 
     return {
         "memory_context": context,
@@ -147,12 +219,19 @@ def classify_intent(state: AgentState) -> dict:
     content = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
 
     model = create_chat_model(temperature=0.0)
+    t0 = time.time()
     response = model.invoke(
         [
             SystemMessage(content=INTENT_CLASSIFIER_PROMPT),
             HumanMessage(content=content),
         ]
     )
+    latency = (time.time() - t0) * 1000
+    # Token 埋点: 意图分类
+    get_tracker().record("llm_intent_classifier",
+        input_tokens=estimate_tokens(INTENT_CLASSIFIER_PROMPT + content),
+        output_tokens=estimate_tokens(response),
+        latency_ms=latency)
 
     parsed = _parse_intent_response(response.content)
     intent = parsed.get("intent", "general")
@@ -220,8 +299,11 @@ def handle_knowledge_search(state: AgentState) -> dict:
     if not query:
         last_msg = state["messages"][-1]
         query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-    result = search_knowledge.invoke({"query": query})
-    logger.info("知识库搜索完成: query=%s", query[:50])
+
+    try:
+        result = search_knowledge.invoke({"query": query})
+    except Exception as e:
+        return {"tool_name": "search_knowledge", "tool_result": str(e)}
     return {"tool_name": "search_knowledge", "tool_result": result}
 
 
@@ -231,13 +313,17 @@ def handle_knowledge_upload(state: AgentState) -> dict:
     content = args.get("content", "")
     filename = args.get("filename", "unknown.txt")
 
-    if content:
-        result = upload_knowledge.invoke({"content": content, "filename": filename})
-    else:
-        file_path = args.get("file_path", "")
-        result = upload_knowledge_file.invoke({"file_path": file_path}) if file_path else "未提供上传内容"
-
-    logger.info("知识库上传完成: filename=%s", filename)
+    try:
+        if content:
+            result = upload_knowledge.invoke({"content": content, "filename": filename})
+        else:
+            file_path = args.get("file_path", "")
+            if file_path:
+                result = upload_knowledge_file.invoke({"file_path": file_path})
+            else:
+                result = "未提供上传内容"
+    except Exception as e:
+        return {"tool_name": "knowledge_upload", "tool_result": str(e)}
     return {"tool_name": "knowledge_upload", "tool_result": result}
 
 
@@ -245,18 +331,25 @@ def handle_knowledge_list(state: AgentState) -> dict:
     """节点: 列出知识库文档"""
     page = state.get("tool_args", {}).get("page", 1)
     page_size = state.get("tool_args", {}).get("page_size", 10)
-    result = list_knowledge.invoke({"page": page, "page_size": page_size})
-    logger.info("知识库列表查询: page=%s", page)
+
+    try:
+        result = list_knowledge.invoke({"page": page, "page_size": page_size})
+    except Exception as e:
+        return {"tool_name": "list_knowledge", "tool_result": str(e)}
     return {"tool_name": "list_knowledge", "tool_result": result}
 
 
 def handle_knowledge_delete(state: AgentState) -> dict:
     """节点: 删除知识库文档"""
     source_name = state.get("tool_args", {}).get("source_name", "")
+
     if not source_name:
         return {"tool_name": "delete_knowledge", "tool_result": "未指定要删除的文档名称"}
-    result = delete_knowledge.invoke({"source_name": source_name})
-    logger.info("知识库删除: source=%s", source_name)
+
+    try:
+        result = delete_knowledge.invoke({"source_name": source_name})
+    except Exception as e:
+        return {"tool_name": "delete_knowledge", "tool_result": str(e)}
     return {"tool_name": "delete_knowledge", "tool_result": result}
 
 
@@ -266,11 +359,15 @@ def handle_general(state: AgentState) -> dict:
 
 
 def log_tool_call(state: AgentState) -> dict:
-    """节点: 记录工具调用（原 monitor_tool 中间件逻辑）"""
+    """节点: 记录工具调用"""
     tool_name = state.get("tool_name", "unknown")
     tool_result = state.get("tool_result", "")
+    trace_id = state.get("trace_id", "unknown")
+
     result_preview = tool_result[:120] if tool_result else "(空)"
-    logger.info("工具调用完成: %s | 结果预览: %s", tool_name, result_preview)
+    logger.info("工具调用完成: %s | trace=%s | 结果=%s",
+                tool_name, trace_id, result_preview)
+
     return {}
 
 
@@ -295,32 +392,90 @@ def generate_final_answer(state: AgentState) -> dict:
     )
 
     model = create_chat_model()
+    t0 = time.time()
     response = model.invoke(
         [
             SystemMessage(content=system_msg),
             *state["messages"],
         ]
     )
+    latency = (time.time() - t0) * 1000
+    # Token 埋点: 最终回答生成
+    input_msgs = system_msg + " " + " ".join(
+        m.content if hasattr(m, "content") else str(m) for m in state.get("messages", [])[:5]
+    )
+    get_tracker().record("llm_generation",
+        input_tokens=estimate_tokens(input_msgs),
+        output_tokens=estimate_tokens(response),
+        latency_ms=latency)
 
     logger.info("最终回答生成完成: is_report=%s has_memory=%s", is_report, bool(memory_context))
     return {"messages": [response]}
 
 
 def save_memory(state: AgentState) -> dict:
-    """节点: 从对话中提取关键事实，持久化到长期记忆"""
-    user_query = state.get("user_query", "")
-    last_msgs = state.get("messages", [])
+    """节点: 三层持久化记忆存储
 
+    1. Redis Hash   → 短期会话上下文（最近N轮，72h TTL）
+    2. ChromaDB     → 长期语义记忆（LLM提取事实 → Embedding → 向量检索）原有逻辑
+    3. Redis Sorted Set → 长期偏好记忆（带权重衰减，用于快速TopK查询）
+    """
+    user_query = state.get("user_query", "")
+    intent = state.get("intent", "")
+    tool_name = state.get("tool_name", "")
+    session_id = state.get("session_id", "default")
+    tenant_id = state.get("tenant_id", "default")
+
+    last_msgs = state.get("messages", [])
     assistant_msg = ""
+
+    # ── 1. Redis 短期上下文 ──
+    try:
+        stm = get_short_memory()
+        # 取最近20条消息作为滑动窗口
+        stm.save(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            messages=last_msgs,
+            intent=intent,
+            tool_name=tool_name,
+            max_window=20,
+        )
+    except Exception as e:
+        logger.warning("Redis短期记忆写入失败: %s", e)
+
+    # ── 2. ChromaDB 长期语义（原有逻辑）──
     if last_msgs:
         last = last_msgs[-1]
         assistant_msg = last.content if hasattr(last, "content") else str(last)
 
+    saved_facts = []
     if user_query and assistant_msg:
-        memory = get_memory()
-        facts = memory.save(user_query, assistant_msg)
-        if facts:
-            logger.info("记忆已提取: %d 条事实", len(facts))
+        try:
+            memory = get_memory()
+            saved_facts = memory.save(user_query, assistant_msg, session_id=session_id)
+        except Exception as e:
+            logger.warning("ChromaDB 记忆存储失败: %s", e)
+
+    # ── 3. Redis Sorted Set 长期偏好 ──
+    if saved_facts:
+        try:
+            ltm = get_long_memory()
+            for fact in saved_facts:
+                importance = fact.get("importance", 3)
+                ltm.save(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    fact=fact.get("fact", ""),
+                    importance=float(importance),
+                )
+            logger.info("Redis长期记忆存储: %d 条 (trace=%s)",
+                         len(saved_facts), state.get("trace_id", ""))
+        except Exception as e:
+            logger.warning("Redis长期记忆写入失败: %s", e)
+
+    if saved_facts:
+        logger.info("记忆已提取: %d 条事实 (session=%s)", len(saved_facts), session_id)
 
     return {}
 

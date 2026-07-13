@@ -111,7 +111,7 @@ class TestGraphWithMemory:
     @requires_api
     def test_graph_compiles_with_memory(self):
         """包含记忆节点的图能正常编译"""
-        from agent部分.graph import build_graph
+        from agent.graph import build_graph
 
         graph = build_graph()
         assert graph is not None
@@ -121,7 +121,7 @@ class TestGraphWithMemory:
     @requires_api
     def test_memory_nodes_in_graph(self):
         """记忆节点在图中的位置正确"""
-        from agent部分.graph import build_graph
+        from agent.graph import build_graph
 
         graph = build_graph()
         # 编译后检查关键节点存在
@@ -132,7 +132,7 @@ class TestGraphWithMemory:
     @pytest.mark.asyncio
     async def test_ainvoke_with_memory(self):
         """完整流程：带记忆节点的 ainvoke 调用（general 意图，不依赖知识库/天气服务）"""
-        from agent部分.react_agent import ReactAgent
+        from agent.react_agent import ReactAgent
 
         agent = ReactAgent()
 

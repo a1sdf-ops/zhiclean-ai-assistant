@@ -57,7 +57,7 @@ func GetWeather(city string) string {
 		return mockWeather(city)
 	}
 
-	url := fmt.Sprintf("https://devapi.qweather.com/v7/weather/now?location=%s&key=%s", cityID, apiKey)
+	url := fmt.Sprintf("https://qa3yftqgyr.re.qweatherapi.com/v7/weather/now?location=%s&key=%s", cityID, apiKey)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)

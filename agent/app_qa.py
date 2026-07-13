@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 
-from agent部分.react_agent import ReactAgent
+from agent.react_agent import ReactAgent
 
 st.set_page_config(page_title="智净AI售后助手", page_icon="🤖")
 st.title("🤖 智净 AI 售后助手")
@@ -41,10 +41,13 @@ if prompt:
     st.session_state["messages"].append({"role": "user", "content": prompt})
 
     with st.spinner("Agent 思考中..."):
-        stream = st.session_state["agent"].execute_stream(prompt)
-        response = st.chat_message("assistant").write_stream(stream)
+        try:
+            stream = st.session_state["agent"].execute_stream(prompt)
+            response = st.chat_message("assistant").write_stream(stream)
+        except Exception:
+            response = None
 
     if response:
         st.session_state["messages"].append({"role": "assistant", "content": response})
     else:
-        st.session_state["messages"].append({"role": "assistant", "content": "抱歉，检索未返回结果。"})
+        st.session_state["messages"].append({"role": "assistant", "content": "抱歉，处理请求时出现错误，请稍后重试。"})

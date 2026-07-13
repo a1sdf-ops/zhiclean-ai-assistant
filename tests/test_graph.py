@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
-from agent部分.graph import _parse_intent_response, build_graph
+from agent.graph import _parse_intent_response, build_graph
 
 _has_api = (
     bool(config.DASHSCOPE_API_KEY)
@@ -64,7 +64,7 @@ class TestGraphCompilation:
 
 class TestMCPIntegration:
     def test_mcp_manager_registry(self):
-        from agent部分.mcp_client import get_mcp_manager
+        from agent.mcp_client import get_mcp_manager
 
         m = get_mcp_manager()
         assert "knowledge" in m._connections
@@ -75,7 +75,7 @@ class TestMCPIntegration:
 @pytest.mark.asyncio
 @requires_api
 async def test_ainvoke_general():
-    from agent部分.react_agent import ReactAgent
+    from agent.react_agent import ReactAgent
 
     agent = ReactAgent()
     result = await agent.ainvoke("你好，请简单介绍你自己")

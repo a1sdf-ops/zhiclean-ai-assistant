@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langchain_core.documents import Document
 
 import config
-from RAG部分.bm25 import BM25Retriever
+from rag.bm25 import BM25Retriever
 from utils.logger_handler import logger
 
 
@@ -30,6 +30,7 @@ class HybridRetriever:
         )
         self.rrf_k = rrf_k
         self._docs: list[Document] = []
+        self._content_to_idx: dict[str, int] = {}  # page_content -> _docs 下标，O(1) 反查
         self._doc_count = 0
         self._indexed = False
 
@@ -45,11 +46,16 @@ class HybridRetriever:
         if current_count == 0:
             self._indexed = True
             self._doc_count = 0
+            self._content_to_idx = {}
             return
 
         metadatas = all_data.get("metadatas", [])
         ids = all_data.get("ids", [])
         self._docs = [Document(page_content=t, metadata=m or {}, id=i) for t, m, i in zip(texts, metadatas, ids)]
+        # 一次性建 content -> idx 字典，setdefault 保留首次出现的下标（与原线性扫描的首命中语义一致）
+        self._content_to_idx = {}
+        for i, t in enumerate(texts):
+            self._content_to_idx.setdefault(t, i)
         self.bm25.index(texts)
         self._doc_count = current_count
         self._indexed = True
@@ -96,11 +102,8 @@ class HybridRetriever:
         return [doc_by_idx[idx] for idx, _ in ranked[:top_k]]
 
     def _find_doc_index(self, text: str) -> int:
-        """在 _docs 中查找 text 对应的下标，-1 表示未找到"""
-        for i, doc in enumerate(self._docs):
-            if doc.page_content == text:
-                return i
-        return -1
+        """在 _docs 中查找 text 对应的下标，-1 表示未找到（O(1) 字典反查）"""
+        return self._content_to_idx.get(text, -1)
 
     def invoke(self, query: str, **kwargs) -> list[Document]:
         """兼容 LangChain retriever 接口"""

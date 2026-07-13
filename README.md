@@ -19,7 +19,9 @@ It demonstrates:
 
 - **Algorithm depth**: Hand-written BM25 sparse retrieval (not Elasticsearch), RRF fusion, BGE-Reranker re-ranking
 - **System design**: 12-node custom StateGraph (not `create_agent`), MCP protocol for tool-service decoupling
-- **Agent memory**: Short-term conversation buffer + long-term semantic memory with LLM fact extraction
+- **Agent memory**: 3-layer store — Redis Hash short-term context (72h TTL) + Redis Sorted Set long-term preferences (importance-weighted, daily decay) + ChromaDB long-term semantic memory (LLM fact extraction). Long-term recall fuses two channels: semantic relevance (ChromaDB) and importance (Sorted Set), de-duplicated.
+- **Multi-tenant isolation**: Every memory key is namespaced by `tenant_id` + `session_id`, so tenants/sessions never see each other's data
+- **Cost observability**: Per-module token & latency tracking (intent classifier / generation / memory extraction)
 - **Cross-language engineering**: Go MCP weather server + Python MCP knowledge server
 - **Production awareness**: Streaming SSE, structured logging, dual-mode invocation, Docker deployment
 
@@ -65,6 +67,7 @@ User ─────────────────────────
 
 - Python 3.11+
 - Go 1.21+ (for weather server)
+- Redis 6+ (for agent memory; e.g. `docker run -d -p 6379:6379 --name redis-agent redis`)
 - [DashScope API Key](https://bailian.console.aliyun.com/) (free)
 
 ### Setup
@@ -87,7 +90,7 @@ go build -o weather-mcp-server .
 cd ..
 
 # 5. Upload knowledge documents
-python RAG部分/demo.py
+python rag/demo.py
 # Upload docs/*.txt files through the CLI
 
 # 6. Start the service
@@ -134,18 +137,18 @@ pytest tests/test_retrieval_eval.py -v -s -k "comparison_table"
 
 | Strategy | MRR | Recall@5 | Precision@5 |
 |----------|-----|----------|-------------|
-| BM25 (sparse only) | 0.240 | 0.320 | 0.168 |
-| Vector (dense only) | **0.933** | 1.000 | 0.416 |
-| Hybrid (BM25+Vec+RRF) | 0.873 | 1.000 | 0.408 |
-| Hybrid + Reranker | 0.873 | 1.000 | **0.510** |
+| BM25 (sparse only) | **1.000** | 0.980 | 0.441 |
+| Vector (dense only) | 0.933 | **1.000** | 0.416 |
+| Hybrid (BM25+Vec+RRF) | **1.000** | **1.000** | 0.424 |
+| Hybrid + Reranker | **1.000** | **1.000** | **0.500** |
 
-Key takeaways:
-- **Vector retrieval** dominates small, semantically distinct document sets (best MRR)
-- **Reranker** provides a +10% precision boost over raw hybrid retrieval (0.51 vs 0.41)
-- **BM25 alone** underperforms on Chinese semantic queries (lexical mismatch), but is valuable as a complementary signal at scale
-- Difficulty-stratified MRR: easy 0.79 / medium 1.00 / hard 0.83
+Key takeaways (honest reading — the KB is tiny, so don't over-claim):
+- **MRR is saturated at 1.000** for three of four strategies. With only 11 chunks and lexically distinct documents, the first relevant hit almost always lands at rank 1 — MRR simply can't discriminate here, so it is *not* evidence of a "strong retriever".
+- **Precision@5 is the only metric that discriminates.** On it, the **Reranker delivers a real +18% lift** over raw hybrid (0.500 vs 0.424) — the reranker is the one component whose value the data actually proves.
+- **Hybrid gives the best Recall@5 (1.000) while keeping MRR at 1.000** — BM25 and vector cover each other's misses.
+- Difficulty-stratified MRR: easy 1.00 / medium 1.00 / hard 1.00 (again saturated by KB size).
 
-> Note: With only 11 document chunks, the hybrid's BM25 signal introduces noise. At larger scale (1000+ chunks), BM25's lexical precision increasingly complements vector recall. This is benchmarked and documented, not assumed.
+> Note: these numbers describe an 11-chunk knowledge base and should be read as a *methodology demonstration*, not a scaling claim. At 1000+ chunks the metrics would spread out and BM25's lexical precision would increasingly complement vector recall. The point of this harness is that retrieval quality is *measured*, not assumed.
 
 ## Key Technical Decisions (and Why)
 
@@ -166,10 +169,12 @@ Key takeaways:
 ├── .github/workflows/
 │   └── tests.yml              # CI/CD: Python tests + Go build + Docker build
 ├── api/                       # FastAPI layer (routers, schemas, dependencies)
-├── agent部分/                  # Agent core
+├── agent/                  # Agent core
 │   ├── graph.py               # 12-node LangGraph StateGraph
-│   ├── state.py               # AgentState TypedDict
-│   ├── react_agent.py         # stream() + ainvoke() dual mode
+│   ├── state.py               # AgentState TypedDict (session/tenant/trace ids)
+│   ├── react_agent.py         # Graph runner: stream() + ainvoke() dual mode
+│   ├── memory_store.py        # Redis 3-layer memory (Hash + Sorted Set)
+│   ├── token_tracker.py       # Per-module token & latency accounting
 │   ├── agent_tools.py         # 7 knowledge-base tools
 │   ├── mcp_client.py          # Multi-server MCP client manager
 │   ├── agent_demo.py          # CLI interactive demo
@@ -177,7 +182,7 @@ Key takeaways:
 │   ├── app_upload.py          # Streamlit upload UI
 │   └── tools/
 │       └── external_tools.py  # Weather / user data / report tools (×6)
-├── RAG部分/                    # Knowledge retrieval engine
+├── rag/                    # Knowledge retrieval engine
 │   ├── rag.py                 # LCEL RAG chain (hybrid/vector switchable)
 │   ├── bm25.py                # BM25 sparse retrieval (hand-written)
 │   ├── hybrid_retriever.py    # BM25 + Vector + RRF hybrid retriever
@@ -222,6 +227,8 @@ Key takeaways:
 | LLM | DashScope qwen-plus / OpenAI GPT | Model factory with dual provider support |
 | Embedding | text-embedding-v4 (1024d) | Via DashScope API |
 | Vector DB | ChromaDB | Local persistence, no infra dependency |
+| Memory store | Redis (Hash + Sorted Set) | Short-term context (TTL) + weighted long-term preferences |
+| Cost tracking | Custom TokenTracker | Per-module token & latency accounting |
 | Sparse Retrieval | BM25 (hand-written) | jieba tokenizer, inverted index, IDF smoothing |
 | Fusion | RRF (Reciprocal Rank Fusion) | k=60, rank-based, score-distribution-agnostic |
 | Re-ranker | BGE-Reranker v2-m3 | Cross-Encoder, CPU inference |
@@ -271,7 +278,7 @@ Key takeaways:
 
 ```bash
 # Chat interface
-cd agent部分
+cd agent
 streamlit run app_qa.py
 
 # Document upload interface

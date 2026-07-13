@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     get_kb_service()
     get_agent()
     try:
-        from agent部分.mcp_client import get_mcp_manager
+        from agent.mcp_client import get_mcp_manager
 
         get_mcp_manager().connect_all()
     except Exception as e:
@@ -56,7 +56,7 @@ async def log_request(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # 通配 origin 下浏览器不允许携带凭证，二者只能取其一
     allow_methods=["*"],
     allow_headers=["*"],
 )

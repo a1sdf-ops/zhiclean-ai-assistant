@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 
 class AgentChatRequest(BaseModel):
     query: str = Field(..., description="用户输入", min_length=1)
+    session_id: str = Field(default="", description="会话标识，不传则自动生成")
+    tenant_id: str = Field(default="default", description="租户标识，用于多租户记忆隔离")
 
 
 class AgentChatResponse(BaseModel):

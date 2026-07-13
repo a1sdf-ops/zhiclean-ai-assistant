@@ -17,7 +17,7 @@ _kb_service = None
 def _get_rag():
     global _rag_service
     if _rag_service is None:
-        from RAG部分.rag import RagService
+        from rag.rag import RagService
 
         _rag_service = RagService()
     return _rag_service
@@ -26,7 +26,7 @@ def _get_rag():
 def _get_kb():
     global _kb_service
     if _kb_service is None:
-        from RAG部分.knowledge_base import KnowledgeBaseService
+        from rag.knowledge_base import KnowledgeBaseService
 
         _kb_service = KnowledgeBaseService()
     return _kb_service

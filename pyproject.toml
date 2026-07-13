@@ -73,14 +73,14 @@ ignore = [
     "E501",   # line too long (handled by formatter)
     "F401",   # unused import (many intentional re-exports)
     "F841",   # unused variable (common in test fixtures)
-    "N999",   # Chinese directory names (RAG部分, agent部分)
+    "N999",   # Chinese directory names (rag, agent)
     "N806",   # uppercase variable N in BM25 formula (standard notation)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F401", "F841", "N802", "N803"]
-"agent部分/*" = ["F401"]
-"RAG部分/*" = ["F401"]
+"agent/*" = ["F401"]
+"rag/*" = ["F401"]
 
 [tool.ruff.format]
 quote-style = "double"

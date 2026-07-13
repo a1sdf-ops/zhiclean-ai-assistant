@@ -21,7 +21,7 @@ User Query
 ## Project Structure
 
 ```
-RAG部分/
+rag/
 ├── rag.py                  # LCEL RAG chain (hybrid/vector switchable via config)
 ├── bm25.py                 # BM25 sparse retrieval (hand-written, jieba tokenizer)
 ├── hybrid_retriever.py     # BM25 + Vector + RRF hybrid retriever
@@ -49,7 +49,7 @@ RRF_K = 60              # RRF rank damping coefficient
 ## Usage
 
 ```bash
-cd RAG部分
+cd rag
 python demo.py
 ```
 

@@ -2,10 +2,10 @@
 Agent 交互式入口 — ReAct Agent + MCP + RAG 完整链路演示
 
 启动:
-  cd agent部分
+  cd agent
   python agent_demo.py
 
-前提: 已在项目根目录 .env 配置 DASHSCOPE_API_KEY，RAG部分 已有上传的知识文档
+前提: 已在项目根目录 .env 配置 DASHSCOPE_API_KEY，rag 已有上传的知识文档
 """
 
 import os
@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent部分.react_agent import ReactAgent
+from agent.react_agent import ReactAgent
 
 
 def main():

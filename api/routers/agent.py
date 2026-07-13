@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
 async def agent_chat(req: AgentChatRequest, agent=Depends(get_agent)):
     """Agent 对话（非流式）"""
     tokens = []
-    for token in agent.execute_stream(req.query):
+    for token in agent.execute_stream(req.query, req.session_id, req.tenant_id):
         tokens.append(token)
     return AgentChatResponse(answer="".join(tokens))
 
@@ -25,7 +25,7 @@ async def agent_stream(req: AgentChatRequest, agent=Depends(get_agent)):
     """Agent 流式对话（SSE）"""
 
     def generate():
-        for token in agent.execute_stream(req.query):
+        for token in agent.execute_stream(req.query, req.session_id, req.tenant_id):
             yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -43,5 +43,5 @@ async def agent_stream(req: AgentChatRequest, agent=Depends(get_agent)):
 @router.post("/invoke", response_model=AgentChatResponse)
 async def agent_invoke(req: AgentChatRequest, agent=Depends(get_agent)):
     """Agent 异步全量调用（测试/批处理路径）"""
-    answer = await agent.ainvoke(req.query)
+    answer = await agent.ainvoke(req.query, req.session_id, req.tenant_id)
     return AgentChatResponse(answer=answer, mode="async")

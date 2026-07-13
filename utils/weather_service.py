@@ -11,7 +11,7 @@ except ImportError:
     pass
 
 # 和风天气 API 地址
-_API_HOST = os.environ.get("QWEATHER_API_HOST", "devapi.qweather.com")
+_API_HOST = os.environ.get("QWEATHER_API_HOST", "qa3yftqgyr.re.qweatherapi.com")
 
 WEATHER_NOW_URL = f"https://{_API_HOST}/v7/weather/now"
 

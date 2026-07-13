@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 
-from RAG部分.knowledge_base import KnowledgeBaseService
+from rag.knowledge_base import KnowledgeBaseService
 
 st.set_page_config(page_title="智净知识库管理", page_icon="📚")
 st.title("📚 智净知识库管理")

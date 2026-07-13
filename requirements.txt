@@ -18,6 +18,9 @@ sentence-transformers>=3.0.0
 # MCP
 mcp>=1.0.0
 
+# Redis (Agent 记忆存储：短期 Hash + 长期 Sorted Set)
+redis>=5.0.0
+
 # Streamlit (开发/演示用)
 streamlit>=1.40.0
 

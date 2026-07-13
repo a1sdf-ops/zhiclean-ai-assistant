@@ -91,13 +91,23 @@ class MemoryManager:
     def _extract_facts(self, user_msg: str, assistant_msg: str) -> list[dict]:
         """用 LLM 从对话中提取关键事实"""
         try:
+            from agent.token_tracker import get_tracker, estimate_tokens
+            import time as _time
+
             model = create_chat_model(temperature=0.0)
-            response = model.invoke(
-                MEMORY_EXTRACTION_PROMPT.format(
-                    user_msg=user_msg,
-                    assistant_msg=assistant_msg,
-                )
+            prompt = MEMORY_EXTRACTION_PROMPT.format(
+                user_msg=user_msg,
+                assistant_msg=assistant_msg,
             )
+            t0 = _time.time()
+            response = model.invoke(prompt)
+            latency = (_time.time() - t0) * 1000
+            # Token 埋点: 记忆提取
+            get_tracker().record("llm_memory_extraction",
+                input_tokens=estimate_tokens(prompt),
+                output_tokens=estimate_tokens(response),
+                latency_ms=latency)
+
             raw = response.content.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1]
