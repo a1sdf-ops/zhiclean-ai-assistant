@@ -14,15 +14,17 @@ from typing import Annotated, TypedDict
 from langgraph.graph.message import add_messages
 
 # ── 意图白名单 ──────────────────────────────
-VALID_INTENTS = frozenset({
-    "weather",
-    "user_report",
-    "knowledge_search",
-    "knowledge_upload",
-    "knowledge_list",
-    "knowledge_delete",
-    "general",
-})
+VALID_INTENTS = frozenset(
+    {
+        "weather",
+        "user_report",
+        "knowledge_search",
+        "knowledge_upload",
+        "knowledge_list",
+        "knowledge_delete",
+        "general",
+    }
+)
 
 
 def generate_trace_id() -> str:
@@ -31,6 +33,7 @@ def generate_trace_id() -> str:
 
 
 # ── AgentState: 强类型定义 ──────────────────
+
 
 class AgentState(TypedDict):
     # 身份层

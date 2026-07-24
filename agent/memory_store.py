@@ -26,14 +26,17 @@ import json
 import os
 import sys
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 # 确保项目根目录在 sys.path 中（自测和外部 import 均可用）
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-import config
+import config  # noqa: E402  # 必须在 sys.path 设置之后才能 import
+
+if TYPE_CHECKING:
+    import redis
 
 
 def get_redis_client():
@@ -52,6 +55,7 @@ def get_redis_client():
 # ShortTermMemory: Redis Hash
 # ═══════════════════════════════════════════
 
+
 class ShortTermMemory:
     """短期记忆 —— 会话级上下文缓存
 
@@ -60,15 +64,22 @@ class ShortTermMemory:
     用途: 多轮对话中快速获取"刚才聊了什么"，避免重复推理
     """
 
-    def __init__(self, r: Optional[redis.Redis] = None, ttl_hours: int = None):
+    def __init__(self, r: redis.Redis | None = None, ttl_hours: int = None):
         self.r = r or get_redis_client()
         self.ttl = (ttl_hours or config.SHORT_MEM_TTL_HOURS) * 3600
 
     def _key(self, tenant_id: str, session_id: str) -> str:
         return f"mem:st:{tenant_id}:{session_id}"
 
-    def save(self, tenant_id: str, session_id: str, messages: list,
-             intent: str = "", tool_name: str = "", max_window: int = 20):
+    def save(
+        self,
+        tenant_id: str,
+        session_id: str,
+        messages: list,
+        intent: str = "",
+        tool_name: str = "",
+        max_window: int = 20,
+    ):
         """保存会话上下文到 Redis Hash（滑动窗口 + TTL）
 
         Args:
@@ -92,13 +103,16 @@ class ShortTermMemory:
 
         pipe = self.r.pipeline()
         pipe.delete(key)
-        pipe.hset(key, mapping={
-            "recent_msgs":        json.dumps(serialized, ensure_ascii=False),
-            "conversation_turn":  str(len(serialized)),
-            "last_intent":        intent,
-            "last_tool":          tool_name,
-            "updated_at":         str(time.time()),
-        })
+        pipe.hset(
+            key,
+            mapping={
+                "recent_msgs": json.dumps(serialized, ensure_ascii=False),
+                "conversation_turn": str(len(serialized)),
+                "last_intent": intent,
+                "last_tool": tool_name,
+                "updated_at": str(time.time()),
+            },
+        )
         pipe.expire(key, self.ttl)
         pipe.execute()
 
@@ -127,6 +141,7 @@ class ShortTermMemory:
 # LongTermMemory: Redis Sorted Set
 # ═══════════════════════════════════════════
 
+
 class LongTermMemory:
     """长期记忆 —— 带权重的用户偏好存储
 
@@ -139,26 +154,31 @@ class LongTermMemory:
               解决"老旧记忆永远占据排名"的记忆漂移问题
     """
 
-    def __init__(self, r: Optional[redis.Redis] = None):
+    def __init__(self, r: redis.Redis | None = None):
         self.r = r or get_redis_client()
-        self.decay_factor = config.DECAY_FACTOR      # 0.95
-        self.min_weight = config.MIN_WEIGHT           # 0.1
+        self.decay_factor = config.DECAY_FACTOR  # 0.95
+        self.min_weight = config.MIN_WEIGHT  # 0.1
 
     def _key(self, tenant_id: str, session_id: str) -> str:
         return f"mem:lt:{tenant_id}:{session_id}"
 
-    def save(self, tenant_id: str, session_id: str,
-             fact: str, importance: float = 3.0):
+    def save(self, tenant_id: str, session_id: str, fact: str, importance: float = 3.0):
         """写入或更新一条长期记忆
 
         Args:
             fact:       记忆文本（如 "用户偏好客厅亮度50%"）
             importance: 初始权重 1.0~5.0，越高越重要
+
+        时效性偏置：权重末尾附加一个微小的时间戳增量（约 0.00017/天），
+        使得同重要度的新旧事实在 topk 排序中，更新的事实排在前面。
+        这个增量足够小，不会让 importance=3 的新事实超过 importance=5 的旧事实，
+        但足够大来打破「9条旧北京 vs 1条新深圳」的同权僵局。
         """
         key = self._key(tenant_id, session_id)
-        # 归一化 importance 到 0.0~1.0
-        weight = max(0.0, min(1.0, importance / 5.0))
-        self.r.zadd(key, {fact: weight})
+        # 归一化 importance 到 0.0~1.0，末尾附加时间戳微调打破平局
+        base = max(0.0, min(1.0, importance / 5.0))
+        bias = time.time() / 1e13  # 约 0.00017，肉眼不可见
+        self.r.zadd(key, {fact: base + bias})
 
     def topk(self, tenant_id: str, session_id: str, k: int = 5) -> list[tuple[str, float]]:
         """取权重最高的 K 条记忆，返回 [(text, score), ...]"""
@@ -209,10 +229,16 @@ if __name__ == "__main__":
 
     # ── 短期记忆 ──
     stm = ShortTermMemory(r)
-    stm.save(tid, sid, [
-        {"role": "user", "content": "客厅灯开了吗"},
-        {"role": "assistant", "content": "客厅灯已关闭"},
-    ], intent="device_control", tool_name="light_check")
+    stm.save(
+        tid,
+        sid,
+        [
+            {"role": "user", "content": "客厅灯开了吗"},
+            {"role": "assistant", "content": "客厅灯已关闭"},
+        ],
+        intent="device_control",
+        tool_name="light_check",
+    )
     loaded = stm.load(tid, sid)
     print(f"短期记忆: turn={loaded.get('conversation_turn')}, intent={loaded.get('last_intent')}")
     assert loaded["conversation_turn"] == 2, "FAIL: short term turn count"

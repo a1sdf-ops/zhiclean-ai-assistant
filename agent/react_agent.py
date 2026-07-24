@@ -45,8 +45,7 @@ class ReactAgent:
             "user_query": "",
         }
 
-        logger.info("Agent 入口: tenant=%s session=%s trace=%s",
-                     tenant_id, session_id, initial_state["trace_id"])
+        logger.info("Agent 入口: tenant=%s session=%s trace=%s", tenant_id, session_id, initial_state["trace_id"])
         return initial_state
 
     def execute_stream(self, query: str, session_id: str = "", tenant_id: str = "") -> Iterator[str]:
@@ -75,8 +74,7 @@ class ReactAgent:
         report = get_report()
         total = report.get("__total__", {}).get("total_tokens", 0)
         modules = {k: v["total_tokens"] for k, v in report.items() if k != "__total__"}
-        logger.info("Token报告: 总计=%d tokens | %s (trace=%s)",
-                     total, modules, initial_state.get("trace_id", ""))
+        logger.info("Token报告: 总计=%d tokens | %s (trace=%s)", total, modules, initial_state.get("trace_id", ""))
 
         msgs = result.get("messages", [])
         for m in reversed(msgs):

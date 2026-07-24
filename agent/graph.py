@@ -25,7 +25,7 @@ from agent.agent_tools import (
 from agent.mcp_client import get_mcp_manager
 from agent.memory_store import LongTermMemory, ShortTermMemory
 from agent.state import AgentState
-from agent.token_tracker import get_tracker, estimate_tokens
+from agent.token_tracker import estimate_tokens, get_tracker
 from agent.tools.external_tools import (
     fetch_external_data,
     fill_context_for_report,
@@ -34,7 +34,7 @@ from agent.tools.external_tools import (
     get_weather,
 )
 from model.factory import create_chat_model
-from utils.logger_handler import logger
+from utils.logger_handler import logger, set_trace_id
 from utils.memory import MemoryManager
 
 _memory_manager = None
@@ -153,6 +153,7 @@ def recall_memory(state: AgentState) -> dict:
     相关性通道(Chroma)保证"贴合此刻话题"，重要性通道(SortedSet)保证"永远重要的
     骨干不被漏掉"；两条互补，Sorted Set 命中已在语义结果中的事实会被去重跳过。
     """
+    set_trace_id(state.get("trace_id", "-"))
     last_msg = state["messages"][-1]
     query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
 
@@ -171,7 +172,7 @@ def recall_memory(state: AgentState) -> dict:
             last_intent = short_ctx.get("last_intent", "")
             if recent:
                 msgs_text = " | ".join(
-                    f"{m.get('role','')}: {str(m.get('content',''))[:80]}"
+                    f"{m.get('role', '')}: {str(m.get('content', ''))[:80]}"
                     for m in recent[-3:]  # 只取最近3轮
                 )
                 context_parts.append(f"[短期上下文] 最近对话: {msgs_text}")
@@ -201,11 +202,13 @@ def recall_memory(state: AgentState) -> dict:
 
     context = "\n".join(context_parts) if context_parts else ""
 
-    logger.info("记忆召回: short=%s semantic=%s important=%s trace=%s",
-                 "有" if short_ctx else "无",
-                 "有" if semantic_ctx else "无",
-                 "有" if important_ctx else "无",
-                 state.get("trace_id", ""))
+    logger.info(
+        "记忆召回: short=%s semantic=%s important=%s trace=%s",
+        "有" if short_ctx else "无",
+        "有" if semantic_ctx else "无",
+        "有" if important_ctx else "无",
+        state.get("trace_id", ""),
+    )
 
     return {
         "memory_context": context,
@@ -228,10 +231,12 @@ def classify_intent(state: AgentState) -> dict:
     )
     latency = (time.time() - t0) * 1000
     # Token 埋点: 意图分类
-    get_tracker().record("llm_intent_classifier",
+    get_tracker().record(
+        "llm_intent_classifier",
         input_tokens=estimate_tokens(INTENT_CLASSIFIER_PROMPT + content),
         output_tokens=estimate_tokens(response),
-        latency_ms=latency)
+        latency_ms=latency,
+    )
 
     parsed = _parse_intent_response(response.content)
     intent = parsed.get("intent", "general")
@@ -365,8 +370,7 @@ def log_tool_call(state: AgentState) -> dict:
     trace_id = state.get("trace_id", "unknown")
 
     result_preview = tool_result[:120] if tool_result else "(空)"
-    logger.info("工具调用完成: %s | trace=%s | 结果=%s",
-                tool_name, trace_id, result_preview)
+    logger.info("工具调用完成: %s | trace=%s | 结果=%s", tool_name, trace_id, result_preview)
 
     return {}
 
@@ -401,13 +405,17 @@ def generate_final_answer(state: AgentState) -> dict:
     )
     latency = (time.time() - t0) * 1000
     # Token 埋点: 最终回答生成
-    input_msgs = system_msg + " " + " ".join(
-        m.content if hasattr(m, "content") else str(m) for m in state.get("messages", [])[:5]
+    input_msgs = (
+        system_msg
+        + " "
+        + " ".join(m.content if hasattr(m, "content") else str(m) for m in state.get("messages", [])[:5])
     )
-    get_tracker().record("llm_generation",
+    get_tracker().record(
+        "llm_generation",
         input_tokens=estimate_tokens(input_msgs),
         output_tokens=estimate_tokens(response),
-        latency_ms=latency)
+        latency_ms=latency,
+    )
 
     logger.info("最终回答生成完成: is_report=%s has_memory=%s", is_report, bool(memory_context))
     return {"messages": [response]}
@@ -469,8 +477,7 @@ def save_memory(state: AgentState) -> dict:
                     fact=fact.get("fact", ""),
                     importance=float(importance),
                 )
-            logger.info("Redis长期记忆存储: %d 条 (trace=%s)",
-                         len(saved_facts), state.get("trace_id", ""))
+            logger.info("Redis长期记忆存储: %d 条 (trace=%s)", len(saved_facts), state.get("trace_id", ""))
         except Exception as e:
             logger.warning("Redis长期记忆写入失败: %s", e)
 

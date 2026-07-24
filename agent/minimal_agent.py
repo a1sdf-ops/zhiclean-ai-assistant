@@ -21,12 +21,18 @@ import json
 import uuid
 from typing import Optional, TypedDict
 
-
 # ── 意图白名单（与 state.py 保持一致）──
-VALID_INTENTS = frozenset({
-    "weather", "user_report", "knowledge_search", "knowledge_upload",
-    "knowledge_list", "knowledge_delete", "general",
-})
+VALID_INTENTS = frozenset(
+    {
+        "weather",
+        "user_report",
+        "knowledge_search",
+        "knowledge_upload",
+        "knowledge_list",
+        "knowledge_delete",
+        "general",
+    }
+)
 
 # ── 下一步路由白名单 ──
 VALID_STEPS = frozenset({"router", "execute_tool", "generate", "end"})
@@ -36,22 +42,24 @@ VALID_STEPS = frozenset({"router", "execute_tool", "generate", "end"})
 # AgentState: 强类型定义
 # ═══════════════════════════════════════════
 
+
 class AgentState(TypedDict):
-    session_id: str          # 会话唯一ID
-    tenant_id: str           # 租户隔离标识
-    messages: list           # 对话历史 [{role, content}, ...]
-    intent: str              # 当前意图，必须 ∈ VALID_INTENTS
-    memory_context: str      # 长期记忆召回文本
-    tool_result: str         # 工具调用结果
-    final_response: str      # 最终回复
-    next_step: str           # 下一步路由: router | execute_tool | generate | end
-    error_count: int         # 全局异常计数，≥3 熔断
-    checkpoint: Optional[str]# 最近一次 JSON 快照
+    session_id: str  # 会话唯一ID
+    tenant_id: str  # 租户隔离标识
+    messages: list  # 对话历史 [{role, content}, ...]
+    intent: str  # 当前意图，必须 ∈ VALID_INTENTS
+    memory_context: str  # 长期记忆召回文本
+    tool_result: str  # 工具调用结果
+    final_response: str  # 最终回复
+    next_step: str  # 下一步路由: router | execute_tool | generate | end
+    error_count: int  # 全局异常计数，≥3 熔断
+    checkpoint: str | None  # 最近一次 JSON 快照
 
 
 # ═══════════════════════════════════════════
 # checkpoint 工具函数
 # ═══════════════════════════════════════════
+
 
 def save_checkpoint(state: AgentState) -> str:
     """拍快照：将 state 序列化为 JSON，用于异常回滚"""
@@ -66,6 +74,7 @@ def restore_checkpoint(raw: str) -> AgentState:
 # ═══════════════════════════════════════════
 # 三个核心节点
 # ═══════════════════════════════════════════
+
 
 def route(state: AgentState) -> AgentState:
     """意图分类：根据用户最后一条消息判断意图并设置 next_step"""
@@ -104,13 +113,13 @@ def execute_tool(state: AgentState) -> AgentState:
 
     # ── 工具模拟（实际项目替换为真实工具调用）──
     tool_results = {
-        "weather":           "[模拟] 天气查询: 北京 晴 22°C",
-        "user_report":       "[模拟] 用户报告: 本月使用15次，活跃度中等",
-        "knowledge_search":  "[模拟] 知识检索: 找到3条相关文档",
-        "knowledge_upload":  "[模拟] 文档上传成功",
-        "knowledge_list":    "[模拟] 知识库文档列表: doc1, doc2, doc3",
-        "knowledge_delete":  "[模拟] 文档已删除",
-        "general":           "",
+        "weather": "[模拟] 天气查询: 北京 晴 22°C",
+        "user_report": "[模拟] 用户报告: 本月使用15次，活跃度中等",
+        "knowledge_search": "[模拟] 知识检索: 找到3条相关文档",
+        "knowledge_upload": "[模拟] 文档上传成功",
+        "knowledge_list": "[模拟] 知识库文档列表: doc1, doc2, doc3",
+        "knowledge_delete": "[模拟] 文档已删除",
+        "general": "",
     }
 
     try:
@@ -154,6 +163,7 @@ def generate(state: AgentState) -> AgentState:
 # MinimalAgent: 主循环入口
 # ═══════════════════════════════════════════
 
+
 class MinimalAgent:
     """不依赖任何框架的 Agent 状态机
 
@@ -163,13 +173,12 @@ class MinimalAgent:
     def __init__(self):
         # 路由表: next_step → handler
         self._dispatch = {
-            "router":       route,
+            "router": route,
             "execute_tool": execute_tool,
-            "generate":     generate,
+            "generate": generate,
         }
 
-    def run(self, query: str, session_id: str = "", tenant_id: str = "",
-            memory_context: str = "") -> AgentState:
+    def run(self, query: str, session_id: str = "", tenant_id: str = "", memory_context: str = "") -> AgentState:
         """主循环：route → execute → generate，含熔断 + checkpoint
 
         Args:

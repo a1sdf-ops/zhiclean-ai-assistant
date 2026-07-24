@@ -6,6 +6,7 @@
 
 import os
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -22,6 +23,9 @@ st.divider()
 if "agent" not in st.session_state:
     with st.spinner("正在初始化 Agent（加载 StateGraph + 模型）..."):
         st.session_state["agent"] = ReactAgent()
+
+if "session_id" not in st.session_state:
+    st.session_state["session_id"] = str(uuid.uuid4())[:12]
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = [
@@ -42,7 +46,7 @@ if prompt:
 
     with st.spinner("Agent 思考中..."):
         try:
-            stream = st.session_state["agent"].execute_stream(prompt)
+            stream = st.session_state["agent"].execute_stream(prompt, session_id=st.session_state["session_id"])
             response = st.chat_message("assistant").write_stream(stream)
         except Exception:
             response = None

@@ -1,10 +1,12 @@
 """Agent 对话 API"""
 
 import json
+from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
+from agent.token_tracker import get_tracker
 from api.dependencies import get_agent
 from api.schemas.agent import AgentChatRequest, AgentChatResponse
 
@@ -45,3 +47,20 @@ async def agent_invoke(req: AgentChatRequest, agent=Depends(get_agent)):
     """Agent 异步全量调用（测试/批处理路径）"""
     answer = await agent.ainvoke(req.query, req.session_id, req.tenant_id)
     return AgentChatResponse(answer=answer, mode="async")
+
+
+@router.get("/cost")
+async def get_cost_report(
+    start_date: str | None = Query(None, description="起始日期 ISO 格式，如 2026-07-01"),
+    end_date: str | None = Query(None, description="结束日期"),
+    module: str | None = Query(None, description="按模块过滤"),
+):
+    """Token 成本历史报告（从 SQLite 查询）"""
+    tracker = get_tracker()
+    rows = tracker.cost_report(start_date=start_date, end_date=end_date, module=module)
+    session_report = tracker.report()
+    return {
+        "history": rows,
+        "current_session": {k: v for k, v in session_report.items() if k != "__total__"},
+        "session_total": session_report.get("__total__", {}),
+    }

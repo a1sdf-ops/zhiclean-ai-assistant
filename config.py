@@ -50,6 +50,7 @@ CHROMA_PERSIST_DIR = os.path.join(DATA_DIR, "chroma_db")
 CHAT_HISTORY_DIR = os.path.join(DATA_DIR, "chat_history")
 MD5_PATH = os.path.join(DATA_DIR, "md5.text")
 MCP_SERVER_PATH = os.path.join(RAG_DIR, "mcp_server.py")
+TOKEN_DB_PATH = os.path.join(DATA_DIR, "token_usage.db")
 
 # ============ 日志 ============
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
