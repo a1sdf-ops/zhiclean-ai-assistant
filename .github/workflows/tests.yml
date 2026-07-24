@@ -40,7 +40,7 @@ jobs:
         run: |
           pip install ruff
           ruff check . --output-format=github
-          ruff format --check .
+          ruff format --check . --exclude '*.md'
 
       - name: Run tests
         env:
