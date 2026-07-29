@@ -32,6 +32,7 @@ class ReactAgent:
             session_id = f"session_{generate_trace_id()}"
         if not tenant_id:
             import hashlib
+
             tenant_id = f"tenant_{hashlib.md5(session_id.encode()).hexdigest()[:12]}"
 
         initial_state = {

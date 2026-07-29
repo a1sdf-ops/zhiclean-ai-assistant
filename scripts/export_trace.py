@@ -18,9 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 # 日志格式: 2026-07-28 14:20:14 | INFO    | trace_id | logger | file:line | message
-LOG_PATTERN = re.compile(
-    r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \| (\w+)\s*\| (\S+) \| (\S+) \| (\S+):(\d+) \| (.*)"
-)
+LOG_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \| (\w+)\s*\| (\S+) \| (\S+) \| (\S+):(\d+) \| (.*)")
 
 # 关键延迟行匹配
 LATENCY_PATTERNS = {
@@ -42,14 +40,16 @@ def parse_log_file(filepath):
             if not m:
                 continue
             ts, level, trace_id, logger, filename, lineno, msg = m.groups()
-            traces[trace_id].append({
-                "ts": ts,
-                "level": level,
-                "logger": logger,
-                "file": filename,
-                "line": int(lineno),
-                "msg": msg,
-            })
+            traces[trace_id].append(
+                {
+                    "ts": ts,
+                    "level": level,
+                    "logger": logger,
+                    "file": filename,
+                    "line": int(lineno),
+                    "msg": msg,
+                }
+            )
     return traces
 
 
@@ -130,17 +130,25 @@ def cmd_show(trace_id):
         if trace_id in traces:
             events = traces[trace_id]
             latency = extract_latency(events)
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Trace:  {trace_id}")
             print(f"文件:  {lf}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             print(f"端点:    {latency['endpoint'] or 'N/A'}")
-            print(f"总耗时:  {latency['total_ms']}ms ({latency['total_ms']/1000:.1f}s)" if latency['total_ms'] else "总耗时:  N/A")
+            print(
+                f"总耗时:  {latency['total_ms']}ms ({latency['total_ms'] / 1000:.1f}s)"
+                if latency["total_ms"]
+                else "总耗时:  N/A"
+            )
             print("--- LLM 调用拆解 ---")
-            print(f"意图分类:   {latency['intent'] or 'N/A'} | {latency['intent_latency']}ms" if latency['intent_latency'] else "意图分类:   N/A")
-            print(f"回答生成:   {latency['generate_latency']}ms" if latency['generate_latency'] else "回答生成:   N/A")
-            mem_lat = latency['memory_extract_latency']
-            mem_n = latency['memory_extract_facts']
+            print(
+                f"意图分类:   {latency['intent'] or 'N/A'} | {latency['intent_latency']}ms"
+                if latency["intent_latency"]
+                else "意图分类:   N/A"
+            )
+            print(f"回答生成:   {latency['generate_latency']}ms" if latency["generate_latency"] else "回答生成:   N/A")
+            mem_lat = latency["memory_extract_latency"]
+            mem_n = latency["memory_extract_facts"]
             print(f"记忆提取:   {mem_n}条事实 | {mem_lat}ms" if mem_lat else "记忆提取:   N/A")
             print("--- 完整事件时间线 ---")
             for e in events:
@@ -193,20 +201,17 @@ def cmd_today_summary():
         )
 
     # 统计
-    intents = [lat["intent_latency"] for lat in map(extract_latency, request_traces.values())
-               if lat["intent_latency"]]
-    gens = [lat["generate_latency"] for lat in map(extract_latency, request_traces.values())
-            if lat["generate_latency"]]
-    totals = [lat["total_ms"] for lat in map(extract_latency, request_traces.values())
-              if lat["total_ms"]]
+    intents = [lat["intent_latency"] for lat in map(extract_latency, request_traces.values()) if lat["intent_latency"]]
+    gens = [lat["generate_latency"] for lat in map(extract_latency, request_traces.values()) if lat["generate_latency"]]
+    totals = [lat["total_ms"] for lat in map(extract_latency, request_traces.values()) if lat["total_ms"]]
 
     if totals:
         print("\n--- 统计 ---")
-        print(f"平均总耗时: {sum(totals)/len(totals):.0f}ms ({sum(totals)/len(totals)/1000:.1f}s)")
+        print(f"平均总耗时: {sum(totals) / len(totals):.0f}ms ({sum(totals) / len(totals) / 1000:.1f}s)")
         if intents:
-            print(f"平均意图分类: {sum(intents)/len(intents):.0f}ms")
+            print(f"平均意图分类: {sum(intents) / len(intents):.0f}ms")
         if gens:
-            print(f"平均回答生成: {sum(gens)/len(gens):.0f}ms")
+            print(f"平均回答生成: {sum(gens) / len(gens):.0f}ms")
 
 
 def main():

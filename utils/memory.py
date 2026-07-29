@@ -83,7 +83,9 @@ class MemoryManager:
 
     # ---------- 写入 ----------
 
-    def save(self, user_msg: str, assistant_msg: str, session_id: str = "default", tenant_id: str = "default") -> tuple[list[dict], dict | None]:
+    def save(
+        self, user_msg: str, assistant_msg: str, session_id: str = "default", tenant_id: str = "default"
+    ) -> tuple[list[dict], dict | None]:
         """从一轮对话中提取事实并持久化，返回 (事实列表, 画像更新)"""
         if not self._enabled or self.store is None:
             return [], None
@@ -151,10 +153,12 @@ class MemoryManager:
             facts = result.get("facts", []) if isinstance(result, dict) else []
             profile_update = result.get("profile_update") if isinstance(result, dict) else None
 
-            logger.info("记忆提取LLM: %d 条事实, profile=%s | latency=%.0fms",
-                        len(facts) if isinstance(facts, list) else 0,
-                        "有" if profile_update else "无",
-                        latency)
+            logger.info(
+                "记忆提取LLM: %d 条事实, profile=%s | latency=%.0fms",
+                len(facts) if isinstance(facts, list) else 0,
+                "有" if profile_update else "无",
+                latency,
+            )
             return (facts if isinstance(facts, list) else []), profile_update
         except Exception as e:
             logger.warning("记忆提取失败: %s | raw=%s", e, raw[:200] if raw else "(无输出)")

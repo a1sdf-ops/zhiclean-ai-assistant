@@ -134,8 +134,11 @@ _CONSUMABLE_CYCLE = {
     "dust_bag": (2, 3),
 }
 _CONSUMABLE_LABEL = {
-    "hepa_filter": "HEPA滤网", "side_brush": "边刷",
-    "main_brush": "主刷", "mop_pad": "拖布", "dust_bag": "尘袋",
+    "hepa_filter": "HEPA滤网",
+    "side_brush": "边刷",
+    "main_brush": "主刷",
+    "mop_pad": "拖布",
+    "dust_bag": "尘袋",
 }
 
 
@@ -333,7 +336,13 @@ def classify_intent(state: AgentState) -> dict:
     if intent not in INTENT_LABELS:
         intent = "general"
 
-    logger.info("意图分类: %s | tool_args=%s | is_report=%s | latency=%.0fms", intent, parsed.get("tool_args"), parsed.get("is_report"), latency)
+    logger.info(
+        "意图分类: %s | tool_args=%s | is_report=%s | latency=%.0fms",
+        intent,
+        parsed.get("tool_args"),
+        parsed.get("is_report"),
+        latency,
+    )
 
     return {
         "intent": intent,
@@ -414,6 +423,7 @@ def handle_knowledge_search(state: AgentState) -> dict:
         # A1 优化：handler 只做检索，LLM 留给 generate_final_answer
         try:
             from rag.rag import RagService
+
             rag = RagService()
             docs = rag.retrieve_documents(query, top_k=getattr(config, "RAG_RETRIEVE_TOP_K", 5))
             # 第一次检索为空且 query 是提取的短词时，用原始提问回退一次
@@ -421,8 +431,10 @@ def handle_knowledge_search(state: AgentState) -> dict:
                 logger.info("首次检索为空(query=%s)，用原始提问回退", query[:50])
                 docs = rag.retrieve_documents(original_query.strip(), top_k=getattr(config, "RAG_RETRIEVE_TOP_K", 5))
             if not docs:
-                return {"tool_name": "search_knowledge",
-                        "tool_result": "知识库中暂未收录该问题的专项文档，请结合产品通用知识回答用户"}
+                return {
+                    "tool_name": "search_knowledge",
+                    "tool_result": "知识库中暂未收录该问题的专项文档，请结合产品通用知识回答用户",
+                }
             return {"tool_name": "search_knowledge", "tool_result": f"[检索到以下参考文档，请基于此回答]\n\n{docs}"}
         except Exception as e:
             return {"tool_name": "search_knowledge", "tool_result": str(e)}
@@ -565,7 +577,9 @@ def generate_final_answer(state: AgentState) -> dict:
         latency_ms=latency,
     )
 
-    logger.info("最终回答生成完成: is_report=%s has_memory=%s | latency=%.0fms", is_report, bool(memory_context), latency)
+    logger.info(
+        "最终回答生成完成: is_report=%s has_memory=%s | latency=%.0fms", is_report, bool(memory_context), latency
+    )
     return {"messages": [response]}
 
 
@@ -591,8 +605,10 @@ def save_memory(state: AgentState) -> dict:
         try:
             memory = get_memory()
             saved_facts, profile_update = memory.save(
-                user_query, assistant_msg,
-                session_id=session_id, tenant_id=tenant_id,
+                user_query,
+                assistant_msg,
+                session_id=session_id,
+                tenant_id=tenant_id,
             )
         except Exception as e:
             logger.warning("ChromaDB 记忆存储失败: %s", e)

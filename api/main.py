@@ -75,6 +75,7 @@ async def health():
 async def token_stats():
     """Token 消耗统计（SQLite 历史数据）"""
     from agent.token_tracker import get_tracker
+
     tracker = get_tracker()
     return {
         "session": tracker.report(),
