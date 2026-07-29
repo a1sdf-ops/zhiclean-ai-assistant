@@ -9,21 +9,19 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/A1SDF-OPS/zhiclean-ai-assistant/actions/workflows/tests.yml/badge.svg)](https://github.com/A1SDF-OPS/zhiclean-ai-assistant/actions/workflows/tests.yml)
 
-An intelligent after-sales service platform for the fictional smart home brand "ZhiClean", built to demonstrate **production-grade LLM application engineering** capabilities — from custom LangGraph orchestration to BM25+vector hybrid retrieval, and cross-language MCP protocol integration.
+An intelligent after-sales service platform for the smart home brand "ZhiClean", built to demonstrate **production-grade LLM application engineering** — from custom LangGraph orchestration to BM25+vector hybrid retrieval, structured user profiling, and cross-language MCP protocol integration.
 
-## Why This Project Exists
+## Highlights
 
-This project is designed to answer one question on a resume: **"Can this candidate build a real LLM application, not just call APIs?"**
-
-It demonstrates:
-
-- **Algorithm depth**: Hand-written BM25 sparse retrieval (not Elasticsearch), RRF fusion, BGE-Reranker re-ranking
-- **System design**: 12-node custom StateGraph (not `create_agent`), MCP protocol for tool-service decoupling
-- **Agent memory**: 3-layer store — Redis Hash short-term context (72h TTL) + Redis Sorted Set long-term preferences (importance-weighted, daily decay) + ChromaDB long-term semantic memory (LLM fact extraction). Long-term recall fuses two channels: semantic relevance (ChromaDB) and importance (Sorted Set), de-duplicated.
-- **Multi-tenant isolation**: Every memory key is namespaced by `tenant_id` + `session_id`, so tenants/sessions never see each other's data
-- **Cost observability**: Per-module token & latency tracking (intent classifier / generation / memory extraction)
-- **Cross-language engineering**: Go MCP weather server + Python MCP knowledge server
-- **Production awareness**: Streaming SSE, structured logging, dual-mode invocation, Docker deployment
+- **12-node LangGraph StateGraph** — intent classification → 7-way routing → tool execution → answer generation → memory persistence
+- **User profile system** — 8-field structured JSON profile per tenant (devices with issues/usage/consumables, location tracking, purchase intent, service history, question history)
+- **2-layer agent memory** — ChromaDB semantic memory (vector recall) + JSON user profile (O(1) full load); deterministic code-based merge, no LLM scoring drift
+- **BM25 + Vector hybrid RAG** — hand-written BM25 sparse retrieval, RRF fusion, BGE-Reranker re-ranking; 17-question evaluation: 0% hallucination, 100% honest on out-of-domain queries
+- **Token-level SSE streaming** — `astream_events` captures real LLM tokens, not node-level chunks
+- **Latency optimized** — merged dual-LLM bottleneck in RAG path, average response 22s → 12s (↓46%)
+- **Full observability** — trace_id per request, per-module token & latency tracking, structured logging (1.7MB → 3.4KB noise reduction)
+- **Cross-language MCP** — Go weather server + Python knowledge server, JSON-RPC over stdio
+- **Multi-tenant isolation** — profile and memory keyed by `tenant_id` (MD5-derived from session_id for stability)
 
 ## Architecture
 
@@ -35,40 +33,87 @@ User ─────────────────────────
 ┌───────────────────────────────────────────────────────┐
 │                  LangGraph Agent                       │
 │                                                        │
-│  recall_memory → classify_intent ──► route ──┬── handle_weather        │
-│                      (7 intents) ├── handle_user_report │
-│                               ├── handle_knowledge_*   │
-│                               └── handle_general        │
-│                                    │                    │
-│                               log_tool_call             │
-│                                    │                    │
-│                               generate_final            │
-│                                    │                    │
-│                               save_memory ──→ END       │
-└───────────────────┬────────────────────────────────────┘
+│  recall_memory ──► classify_intent ──► route ──┬── handle_weather        │
+│  (profile load     (LLM: qwen-plus            ├── handle_user_report     │
+│   + ChromaDB        ~970ms avg)                ├── handle_knowledge_*    │
+│   semantic recall)                             └── handle_general        │
+│                                                     │                    │
+│                                               log_tool_call              │
+│                                                     │                    │
+│                                               generate_final_answer      │
+│                                               (LLM: ~6.6s avg)           │
+│                                                     │                    │
+│                                               save_memory ──► END        │
+│                                               (LLM: extract facts        │
+│                                                + profile_update)         │
+└───────────────────┬───────────────────────────────────┘
                     │
           ┌─────────┼─────────┐
           ▼         ▼         ▼
 ┌──────────────┐ ┌──────────┐ ┌────────────────┐
 │ RAG Engine   │ │ Go MCP   │ │ External Tools  │
-│ (Python)     │ │ Server   │ │ (Python, local) │
+│ (Python)     │ │ Server   │ │ (Python)        │
 │              │ │          │ │                 │
 │ BM25 +       │ │ Weather  │ │ User behavior   │
 │ Chroma +     │ │ API      │ │ Report gen      │
 │ RRF + Rerank │ │          │ │                 │
+└──────┬───────┘ └────┬─────┘ └────────┬───────┘
+       │              │               │
+       ▼              ▼               ▼
+┌──────────────┐ ┌──────────┐ ┌────────────────┐
+│ ChromaDB     │ │ Go MCP   │ │ JSON Profile   │
+│ (knowledge)  │ │ (stdio)  │ │ (per tenant)   │
 └──────────────┘ └──────────┘ └────────────────┘
-      MCP             MCP
-  (JSON-RPC)      (JSON-RPC)
 ```
+
+### Intent Routing (7 handlers)
+
+| Intent | Handler | Description |
+|--------|---------|-------------|
+| `weather` | `handle_weather` | MCP Go weather server → QWeather API; auto-resolves "当前城市" from profile |
+| `knowledge_search` | `handle_knowledge_search` | Hybrid RAG retrieval (no LLM in handler, only in generate_final_answer) |
+| `knowledge_upload` | `handle_knowledge_upload` | Upload text/file to ChromaDB knowledge base (MD5 dedup) |
+| `knowledge_list` | `handle_knowledge_list` | Paginated document listing |
+| `knowledge_delete` | `handle_knowledge_delete` | Delete document by source name |
+| `user_report` | `handle_user_report` | Generate monthly usage report (is_report mode) |
+| `general` | `handle_general` | Chitchat, greetings, agent self-introduction |
+
+## User Profile System
+
+Each tenant gets a structured JSON profile (`data/profiles/{tenant_id}.json`) that persists across sessions:
+
+```json
+{
+  "devices": [{
+    "model": "Z3 Ultra",
+    "issues": [{"problem": "吸力变小", "status": "未解决", "attempted_solutions": []}],
+    "consumables": {"hepa_filter": {"last_replaced": null}},
+    "usage": {"frequency": "每天一次", "primary_area": "客厅", "floor_type": "木地板"}
+  }],
+  "current_location": "深圳",
+  "locations": ["北京", "深圳"],
+  "purchase_intent": [{"product": "Z3 Ultra", "level": "高"}],
+  "question_history": [
+    {"category": "故障排查", "device": "Z3 Ultra", "problem": "吸力变小", "query_summary": "吸力变小怎么处理", "resolved": false}
+  ],
+  "service_history": [],
+  "preferences": {}
+}
+```
+
+**Key design decisions:**
+- **LLM active inference** — extracts structured data from natural language (e.g. "搬到深圳" → `current_location` overwrite, "我的Z3 Ultra" → device ownership)
+- **Code-only merge** — deterministic, no LLM scoring drift; issues merge by problem name, usage dict-update, consumables per-key merge
+- **question_history** — FIFO queue (100 item limit), LLM extracts one entry per round, code appends; injected into system prompt as summary stats + last 5 items
+- **tenant_id** = `MD5(session_id)[:12]` — stable within session, no random drift
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- Go 1.21+ (for weather server)
-- Redis 6+ (for agent memory; e.g. `docker run -d -p 6379:6379 --name redis-agent redis`)
-- [DashScope API Key](https://bailian.console.aliyun.com/) (free)
+- Go 1.21+ (for weather MCP server)
+- [DashScope API Key](https://bailian.console.aliyun.com/) (free tier available)
 
 ### Setup
 
@@ -89,21 +134,20 @@ cd go-weather-server
 go build -o weather-mcp-server .
 cd ..
 
-# 5. Upload knowledge documents
+# 5. Upload knowledge documents (optional, demo data)
 python rag/demo.py
-# Upload docs/*.txt files through the CLI
 
 # 6. Start the service
 uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-Visit `http://localhost:8000/health` — you should see `{"status": "ok", "version": "2.0.0"}`.
+Visit `http://localhost:8000/health` — you should see `{"status": "ok"}`.
 
 ### API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/agent/stream` | Streaming agent dialogue (SSE) |
+| `POST` | `/api/v1/agent/stream` | Streaming agent dialogue (SSE, token-level) |
 | `POST` | `/api/v1/agent/invoke` | Full async response (testing) |
 | `POST` | `/api/v1/agent/chat` | Agent chat (non-streaming) |
 | `POST` | `/api/v1/rag/stream` | RAG search streaming (SSE) |
@@ -113,27 +157,43 @@ Visit `http://localhost:8000/health` — you should see `{"status": "ok", "versi
 | `GET` | `/api/v1/knowledge/list` | List documents (paginated) |
 | `PUT` | `/api/v1/knowledge/{name}` | Update a document |
 | `DELETE` | `/api/v1/knowledge/{name}` | Delete a document |
+| `GET` | `/token-stats` | Token cost dashboard (internal) |
 | `GET` | `/health` | Health check |
 
-### Run Tests
+## Key Technical Decisions
 
-```bash
-pytest tests/ -v
-```
+| Decision | Rationale |
+|----------|-----------|
+| **Hand-written BM25**, not Elasticsearch | Demonstrate algorithm implementation; jieba tokenizer, inverted index, IDF smoothing |
+| **Custom StateGraph**, not `create_agent` | Intent-based routing beats auto-ReAct for bounded-domain after-sales; 7 discrete handlers, single-intent per round |
+| **JSON file profile per tenant**, not Redis/MySQL | ~hundreds of bytes per tenant; O(1) read/write; zero external dependency; physical isolation prevents tenant_id forgery |
+| **MD5(session_id) for tenant_id** | Stable identity within session without login; avoids the random UUID drift problem |
+| **Code-only profile merge**, no LLM scoring | Deterministic behavior; no memory drift; issues merge by problem name, not vector similarity |
+| **RAG handler: retrieve only, no LLM** | Removed one LLM call from RAG path; generate_final_answer does a single pass over retrieved documents; saved 10-16s |
+| **Go MCP Server** for weather | Demonstrate cross-language MCP protocol integration (JSON-RPC over stdio) |
+| **BGE-Reranker** for second-stage ranking | Cross-Encoder re-ranking precision far exceeds Bi-Encoder cosine similarity |
+| **Token-level SSE** (`astream_events`) | Captures real LLM token chunks, not node-level state updates; filters non-generate events by `langgraph_node` metadata |
 
-### Retrieval Evaluation
+## Latency Optimization
 
-The project includes a quantitative retrieval evaluation framework that compares four retrieval strategies on 25 annotated queries across 3 difficulty levels.
+The original RAG path had **two LLM calls doing the same thing**: the handler LLM generated an answer from retrieved docs, then `generate_final_answer` LLM paraphrased it. Merged into one.
 
-```bash
-# Run evaluation only
-pytest tests/test_retrieval_eval.py -v -s
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| `knowledge_search` average (11 questions) | 25.1s | 13.1s | ↓48% |
+| All 17 questions average | 22.1s | 11.9s | ↓46% |
+| Weather/general/CRUD (5 questions) | 11.4s | 5.6s | ↓51% |
+| Hallucination rate | — | 0/17 | 0% |
 
-# Run comparison table only
-pytest tests/test_retrieval_eval.py -v -s -k "comparison_table"
-```
+**Latency breakdown (current):**
+- Intent classification (qwen-plus): ~970ms
+- Handler retrieval (no LLM): <1s
+- Answer generation (qwen-plus): ~6.6s (now the primary bottleneck)
+- Memory extraction (qwen-plus): ~1.2s (post-response, not user-facing)
 
-**Evaluation results** (11 chunks, 25 annotated queries):
+## Retrieval Evaluation
+
+Quantitative comparison of 4 retrieval strategies on 25 annotated queries across 3 difficulty levels:
 
 | Strategy | MRR | Recall@5 | Precision@5 |
 |----------|-----|----------|-------------|
@@ -142,25 +202,22 @@ pytest tests/test_retrieval_eval.py -v -s -k "comparison_table"
 | Hybrid (BM25+Vec+RRF) | **1.000** | **1.000** | 0.424 |
 | Hybrid + Reranker | **1.000** | **1.000** | **0.500** |
 
-Key takeaways (honest reading — the KB is tiny, so don't over-claim):
-- **MRR is saturated at 1.000** for three of four strategies. With only 11 chunks and lexically distinct documents, the first relevant hit almost always lands at rank 1 — MRR simply can't discriminate here, so it is *not* evidence of a "strong retriever".
-- **Precision@5 is the only metric that discriminates.** On it, the **Reranker delivers a real +18% lift** over raw hybrid (0.500 vs 0.424) — the reranker is the one component whose value the data actually proves.
-- **Hybrid gives the best Recall@5 (1.000) while keeping MRR at 1.000** — BM25 and vector cover each other's misses.
-- Difficulty-stratified MRR: easy 1.00 / medium 1.00 / hard 1.00 (again saturated by KB size).
+> The knowledge base is intentionally small (11 chunks) — these numbers demonstrate the *methodology* (measuring rather than assuming retrieval quality). At 1000+ chunks the metrics would spread out. The Reranker delivers a real +18% Precision@5 lift, which is the one component whose value the data proves.
 
-> Note: these numbers describe an 11-chunk knowledge base and should be read as a *methodology demonstration*, not a scaling claim. At 1000+ chunks the metrics would spread out and BM25's lexical precision would increasingly complement vector recall. The point of this harness is that retrieval quality is *measured*, not assumed.
+## Agent Evaluation (17 Questions)
 
-## Key Technical Decisions (and Why)
+A comprehensive test suite covering all 7 intent handlers + 2 adversarial tests:
 
-| Decision | Rationale |
-|----------|-----------|
-| **Hand-written BM25**, not Elasticsearch | Demonstrate algorithm implementation ability; BM25 formula and inverted index from scratch |
-| **Custom StateGraph**, not `create_agent` | Show workflow orchestration skill; specific/intent-based routing beats auto/ReAct for this use case |
-| **Go MCP Server** for weather | Demonstrate cross-language MCP protocol integration |
-| **Python MCP Server** for knowledge | Knowledge tools use direct function calls (no MCP overhead needed); MCP server still provided for optional external access |
-| **RRF fusion**, not score normalization | RRF is score-distribution-agnostic; zero-parameter; academically validated |
-| **BGE-Reranker** for second-stage ranking | Cross-Encoder re-ranking precision far exceeds Bi-Encoder cosine similarity |
-| **Quantitative evaluation** (25 queries, 4 strategies) | Prove retrieval quality with numbers (MRR, Recall@K, Precision@K), not assumptions |
+| Category | Count | Examples |
+|----------|-------|---------|
+| Knowledge search | 9 (T1-T7, T10, T15) | Fault diagnosis, error codes, maintenance, product comparison |
+| Weather | 1 (T8) | Real-time city weather via MCP |
+| General | 1 (T9) | Chitchat / self-introduction |
+| Knowledge CRUD | 3 (T11-T13) | List, upload, delete documents |
+| User report | 1 (T14) | Monthly usage report generation |
+| Adversarial | 2 (F1-F2) | Non-existent product (Z3 Pro), out-of-domain query (dishwasher) |
+
+**Results:** 17/17 accurate, 0 hallucinations, 2/2 adversarial honesty.
 
 ## Project Structure
 
@@ -169,24 +226,23 @@ Key takeaways (honest reading — the KB is tiny, so don't over-claim):
 ├── .github/workflows/
 │   └── tests.yml              # CI/CD: Python tests + Go build + Docker build
 ├── api/                       # FastAPI layer (routers, schemas, dependencies)
-├── agent/                  # Agent core
-│   ├── graph.py               # 12-node LangGraph StateGraph
-│   ├── state.py               # AgentState TypedDict (session/tenant/trace ids)
-│   ├── react_agent.py         # Graph runner: stream() + ainvoke() dual mode
-│   ├── memory_store.py        # Redis 3-layer memory (Hash + Sorted Set)
-│   ├── token_tracker.py       # Per-module token & latency accounting
-│   ├── agent_tools.py         # 7 knowledge-base tools
+├── agent/                     # Agent core
+│   ├── graph.py               # 12-node LangGraph StateGraph + all node implementations
+│   ├── state.py               # AgentState TypedDict (session/tenant/trace ids, 7 intents)
+│   ├── react_agent.py         # Graph runner: stream() + aexecute_stream() + ainvoke() triple mode
+│   ├── token_tracker.py       # Per-module token & latency accounting (SQLite)
+│   ├── agent_tools.py         # 7 knowledge-base @tool definitions
 │   ├── mcp_client.py          # Multi-server MCP client manager
 │   ├── agent_demo.py          # CLI interactive demo
-│   ├── app_qa.py              # Streamlit chat UI
-│   ├── app_upload.py          # Streamlit upload UI
+│   ├── app_qa.py              # Streamlit chat UI (dev)
+│   ├── app_upload.py          # Streamlit upload UI (dev)
 │   └── tools/
 │       └── external_tools.py  # Weather / user data / report tools (×6)
-├── rag/                    # Knowledge retrieval engine
-│   ├── rag.py                 # LCEL RAG chain (hybrid/vector switchable)
+├── rag/                       # Knowledge retrieval engine
+│   ├── rag.py                 # LCEL RAG chain (retrieve-only or LLM modes)
 │   ├── bm25.py                # BM25 sparse retrieval (hand-written)
 │   ├── hybrid_retriever.py    # BM25 + Vector + RRF hybrid retriever
-│   ├── vector_stores.py       # ChromaDB vector store
+│   ├── vector_stores.py       # ChromaDB vector store adapter
 │   ├── rerank.py              # BGE-Reranker v2-m3 (CrossEncoder)
 │   ├── knowledge_base.py      # Knowledge CRUD + MD5 dedup
 │   ├── mcp_server.py          # MCP Server (7 tools, JSON-RPC over stdio)
@@ -196,17 +252,26 @@ Key takeaways (honest reading — the KB is tiny, so don't over-claim):
 │   ├── main.go
 │   └── internal/
 │       ├── mcp/               # JSON-RPC protocol & stdio server
-│       └── weather/            # QWeather API client
+│       └── weather/           # QWeather API client
 ├── model/
 │   └── factory.py             # LLM / Embedding factory (DashScope + OpenAI)
-├── utils/
-│   ├── logger_handler.py      # Structured logging (console + file rotation)
-│   ├── weather_service.py     # QWeather API (Python fallback)
-│   └── memory.py              # Agent long-term memory manager
+├── utils/                     # Shared utilities
+│   ├── profile.py             # JSON user profile manager (load/merge/save, per tenant)
+│   ├── memory.py              # ChromaDB semantic memory (LLM fact extraction + vector recall)
+│   ├── logger_handler.py      # Structured logging (whitelist + explicit suppression, daily rotation)
+│   └── weather_service.py     # QWeather API (Python fallback)
+├── scripts/
+│   └── export_trace.py        # Log analysis: extract trace by ID, latency breakdown, daily summary
+├── data/                      # Runtime data (gitignored)
+│   ├── profiles/              # JSON user profiles ({tenant_id}.json)
+│   ├── chroma_db/             # ChromaDB knowledge base vectors
+│   ├── memory_db/             # ChromaDB semantic memory vectors
+│   ├── token_usage.db         # Token cost tracking (SQLite)
+│   └── logs/                  # Daily rotating logs (365-day retention)
 ├── docs/                      # Knowledge base source documents (×5)
 ├── tests/
-│   ├── test_graph.py          # Agent graph tests (intent, compile, MCP, ainvoke)
-│   ├── test_memory.py         # Memory system tests (CRUD, extraction, recall)
+│   ├── test_graph.py          # Agent graph tests (intent routing, MCP, streaming)
+│   ├── test_memory.py         # Memory system tests (extraction, recall, profile)
 │   ├── test_retrieval_eval.py # Retrieval evaluation (MRR, Recall@K, 4-way comparison)
 │   ├── eval_queries.json      # 25 annotated evaluation queries (3 difficulty levels)
 │   └── conftest.py            # Shared test configuration
@@ -226,38 +291,38 @@ Key takeaways (honest reading — the KB is tiny, so don't over-claim):
 |-------|--------|-------|
 | LLM | DashScope qwen-plus / OpenAI GPT | Model factory with dual provider support |
 | Embedding | text-embedding-v4 (1024d) | Via DashScope API |
-| Vector DB | ChromaDB | Local persistence, no infra dependency |
-| Memory store | Redis (Hash + Sorted Set) | Short-term context (TTL) + weighted long-term preferences |
-| Cost tracking | Custom TokenTracker | Per-module token & latency accounting |
+| Agent Framework | LangGraph StateGraph | Custom 12-node DAG, compile-time routing |
+| RAG Chain | LangChain LCEL | Streaming + non-streaming dual chain |
+| Vector DB | ChromaDB | Local persistence, zero infra dependency |
+| Memory / Profile | JSON file + ChromaDB | Profile: per-tenant JSON (8-field structured); Semantic: ChromaDB vector recall |
 | Sparse Retrieval | BM25 (hand-written) | jieba tokenizer, inverted index, IDF smoothing |
 | Fusion | RRF (Reciprocal Rank Fusion) | k=60, rank-based, score-distribution-agnostic |
 | Re-ranker | BGE-Reranker v2-m3 | Cross-Encoder, CPU inference |
-| Agent Framework | LangGraph StateGraph | Custom 12-node workflow |
-| RAG Chain | LangChain LCEL | Streaming + non-streaming dual chain |
-| MCP Protocol | JSON-RPC over stdio | Python + Go cross-language |
+| MCP Protocol | JSON-RPC over stdio | Go + Python cross-language |
 | Backend | FastAPI | SSE streaming, lifespan preload |
+| Cost Tracking | Custom TokenTracker | Per-module token & latency, SQLite persistence |
+| Logging | TimedRotatingFileHandler | Daily rotation, 365-day retention, whitelist suppression |
 | Demo UI | Streamlit | Dev/debug only |
 | Deployment | Docker + docker-compose | Multi-stage build |
 
-## Tools Catalog (13 in total)
+## Tools Catalog (12 total)
 
-### Knowledge Base (7 tools, via LangChain `@tool`)
+### Knowledge Base (7 tools)
 | Tool | Trigger Intent | Description |
 |------|---------------|-------------|
-| `search_knowledge` | `knowledge_search` | Semantic search on product knowledge base |
-| `upload_knowledge` | `knowledge_upload` | Upload text to knowledge base |
+| `search_knowledge` | `knowledge_search` | Hybrid BM25+vector semantic search (retrieve-only, no LLM) |
+| `upload_knowledge` | `knowledge_upload` | Upload text to knowledge base (MD5 dedup) |
 | `upload_knowledge_file` | `knowledge_upload` | Upload file to knowledge base |
 | `list_knowledge` | `knowledge_list` | Paginated list of all documents |
 | `update_knowledge` | `knowledge_upload` | Replace document content |
 | `update_knowledge_file` | `knowledge_upload` | Replace document from file |
-| `delete_knowledge` | `knowledge_delete` | Delete document by name |
+| `delete_knowledge` | `knowledge_delete` | Delete document by source name |
 
-### External Services (6 tools, direct function call)
+### External Services (5 tools)
 | Tool | Source | Description |
 |------|--------|-------------|
-| `get_weather` | Go MCP Server / Python fallback | Real-time city weather |
+| `get_weather` | Go MCP Server / Python fallback | Real-time city weather (auto-resolves "当前城市" from profile) |
 | `get_user_id` | config.py | Current operator identifier |
-| `get_user_location` | env `DEFAULT_CITY` | Default city for weather |
 | `get_current_month` | datetime | Current month (YYYY-MM) |
 | `fetch_external_data` | `data/user_behavior.csv` | User monthly usage record |
 | `fill_context_for_report` | local | Switch to report-generation mode |
@@ -272,35 +337,27 @@ Key takeaways (honest reading — the KB is tiny, so don't over-claim):
 | Z3 Ultra Launch | New features, Z2 Pro comparison, FAQ |
 | After-Sales Policy | Warranty, returns, extended warranty, recycling |
 
-## Demo
-
-### Streamlit UI (dev)
-
-```bash
-# Chat interface
-cd agent
-streamlit run app_qa.py
-
-# Document upload interface
-streamlit run app_upload.py
-```
-
-### Example Conversations
+## Example Conversation
 
 ```
-User: Z2 Pro滤网要怎么保养？
+User: 我在北京，Z3 Ultra 如何保养，每天扫一次客厅木地板
 
-Agent: 根据保养维护指南，滤网保养建议如下：
-- 每周轻敲去除浮灰
-- 如颜色发灰/发黄，清水冲洗后彻底晾干（至少24小时）
-- HEPA滤网最多水洗3次，超过后过滤效率明显下降
-- 建议1-2个月更换一次（价格29元）
-- 如果出风口有肉眼可见灰尘喷出，说明滤网已失效需立刻更换
+Agent: 结合您在北京、每天清扫客厅木地板的使用场景，推荐以下保养方案：
+✅ 每日保养：清空尘盒、清洗拖布、检查边刷
+📅 每周保养：主刷深度清洁、传感器擦拭、滤网清洁
+📆 每月重点：更换滤网（北京PM2.5易堵塞）、驱动轮检查
+💡 特别提示：Z3 Ultra识别木地板后会自动降低水量+适配吸力
 
-User: 我叫小明，我的扫地机器人是Z2 Pro
+User: 我搬到了深圳，最近吸力变小了怎么处理
 
-Agent: 了解了小明！Z2 Pro是扫拖一体机器人...
-(下一轮对话中 Agent 能通过长期记忆召回用户叫"小明"、机型是Z2 Pro)
+Agent: [检测到搬家：北京→深圳；记录问题：吸力变小]
+优先排查：清理主刷边刷缠绕物 → 检查HEPA滤网是否堵塞 → 确认尘盒安装到位
+深圳环境提示：高湿度易致滤网潮黏，建议清洗后彻底阴干
+
+User: 当前城市的天气是什么样的
+
+Agent: [自动从画像解析"当前城市"=深圳]
+深圳实时天气：大雨，26°C，湿度89%，东风4级
 ```
 
 ## License

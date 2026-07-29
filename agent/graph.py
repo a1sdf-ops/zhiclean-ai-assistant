@@ -23,7 +23,6 @@ from agent.agent_tools import (
     upload_knowledge_file,
 )
 from agent.mcp_client import get_mcp_manager
-from agent.memory_store import LongTermMemory, ShortTermMemory
 from agent.state import AgentState
 from agent.token_tracker import estimate_tokens, get_tracker
 from agent.tools.external_tools import (
@@ -36,10 +35,9 @@ from agent.tools.external_tools import (
 from model.factory import create_chat_model
 from utils.logger_handler import logger, set_trace_id
 from utils.memory import MemoryManager
+from utils.profile import ProfileManager
 
 _memory_manager = None
-_short_memory = None
-_long_memory = None
 
 
 def get_memory() -> MemoryManager:
@@ -47,20 +45,6 @@ def get_memory() -> MemoryManager:
     if _memory_manager is None:
         _memory_manager = MemoryManager()
     return _memory_manager
-
-
-def get_short_memory() -> ShortTermMemory:
-    global _short_memory
-    if _short_memory is None:
-        _short_memory = ShortTermMemory()
-    return _short_memory
-
-
-def get_long_memory() -> LongTermMemory:
-    global _long_memory
-    if _long_memory is None:
-        _long_memory = LongTermMemory()
-    return _long_memory
 
 
 # ---------- 意图分类 ----------
@@ -107,10 +91,10 @@ FINAL_ANSWER_PROMPT = """你是知识库助手，严格基于提供的工具调�
 {memory_context}
 规则：
 - 严格基于工具返回的内容回答，不编造信息
-- 检索结果为空时如实告知
+- 检索结果提示"暂未收录专项文档"时，可结合产品通用知识给出排查建议，不强调"知识库未收录"
 - 用简洁专业的语言回答
 - 如果工具结果包含用户数据，以结构化格式呈现
-- 记忆上下文中有相关信息时可以提及"""
+- 记忆上下文中有相关信息时可以引用"""
 
 REPORT_PROMPT = """你是用户使用报告生成助手。基于用户行为数据生成专业的月度使用报告。
 
@@ -141,18 +125,146 @@ def _parse_intent_response(raw: str) -> dict:
         return {"intent": "general", "tool_args": {}, "is_report": False}
 
 
+# 耗材推荐更换周期（月），来自保养维护指南
+_CONSUMABLE_CYCLE = {
+    "hepa_filter": (1, 2),
+    "side_brush": (3, 4),
+    "main_brush": (6, 8),
+    "mop_pad": (3, 3),
+    "dust_bag": (2, 3),
+}
+_CONSUMABLE_LABEL = {
+    "hepa_filter": "HEPA滤网", "side_brush": "边刷",
+    "main_brush": "主刷", "mop_pad": "拖布", "dust_bag": "尘袋",
+}
+
+
+def _format_profile(profile: dict) -> str:
+    """将用户画像格式化为 prompt 上下文字符串"""
+    if not profile:
+        return ""
+    lines = []
+
+    # ── 当前城市 ──
+    current_loc = profile.get("current_location", "")
+    locations = profile.get("locations", [])
+    if current_loc:
+        history_note = f"（历史: {', '.join(locations)}）" if len(locations) > 1 else ""
+        lines.append(f"  当前城市: {current_loc} {history_note}".rstrip())
+    elif locations:
+        lines.append(f"  当前城市: {locations[-1]}")
+
+    # ── 设备 ──
+    devices = profile.get("devices", [])
+    if devices:
+        lines.append("  设备:")
+        for d in devices:
+            model = d.get("model", "")
+            purchased = d.get("purchased", "")
+            parts = [f"    • {model}"]
+            if purchased:
+                parts.append(f"购买: {purchased}")
+            lines.append(" | ".join(parts))
+
+            # 使用习惯
+            usage = d.get("usage", {})
+            if usage:
+                u = []
+                if usage.get("frequency"):
+                    u.append(f"频率: {usage['frequency']}")
+                if usage.get("primary_area"):
+                    u.append(f"区域: {usage['primary_area']}")
+                if usage.get("floor_type"):
+                    u.append(f"地面: {usage['floor_type']}")
+                if usage.get("has_pets") is True:
+                    u.append("养宠物")
+                if u:
+                    lines.append(f"      使用习惯: {' | '.join(u)}")
+
+            # 已知问题（结构化）
+            issues = d.get("issues", [])
+            if issues:
+                lines.append("      已知问题:")
+                for iss in issues:
+                    if isinstance(iss, str):
+                        lines.append(f"        - {iss}")
+                    else:
+                        problem = iss.get("problem", "")
+                        status = iss.get("status", "未解决")
+                        attempted = iss.get("attempted_solutions", [])
+                        s = f"        - {problem} [{status}]"
+                        if attempted:
+                            s += f"  已尝试: {', '.join(attempted)}"
+                        lines.append(s)
+
+            # 耗材
+            consumables = d.get("consumables", {})
+            if consumables:
+                lines.append("      耗材:")
+                for key, val in consumables.items():
+                    label = _CONSUMABLE_LABEL.get(key, key)
+                    last = val.get("last_replaced", "?")
+                    cycle = _CONSUMABLE_CYCLE.get(key)
+                    if cycle:
+                        lines.append(f"        - {label}: 上次更换 {last}（建议每{cycle[0]}-{cycle[1]}个月）")
+                    else:
+                        lines.append(f"        - {label}: 上次更换 {last}")
+
+    # ── 偏好 ──
+    prefs = profile.get("preferences", {})
+    if prefs:
+        p = []
+        tech = prefs.get("tech_level", "")
+        if tech:
+            p.append(f"技术水平: {tech}")
+        style = prefs.get("reply_style", "")
+        if style:
+            p.append(f"回复偏好: {style}")
+        other = {k: v for k, v in prefs.items() if k not in ("tech_level", "reply_style")}
+        for k, v in other.items():
+            p.append(f"{k}: {v}")
+        if p:
+            lines.append(f"  偏好: {' | '.join(p)}")
+
+    # ── 购买意向 ──
+    purchase_intent = profile.get("purchase_intent", [])
+    if purchase_intent:
+        items = [f"{pi.get('product', '?')}(意向:{pi.get('level', '?')})" for pi in purchase_intent]
+        lines.append(f"  购买意向: {', '.join(items)}")
+
+    # ── 售后记录 ──
+    service_history = profile.get("service_history", [])
+    if service_history:
+        lines.append("  售后记录:")
+        for sh in service_history[-3:]:
+            lines.append(f"    - [{sh.get('date', '?')}] {sh.get('type', '?')}: {sh.get('description', '')}")
+
+    # ── 历史提问 ──
+    question_history = profile.get("question_history", [])
+    if question_history:
+        total = len(question_history)
+        resolved_count = sum(1 for q in question_history if q.get("resolved"))
+        unresolved = [q for q in question_history if not q.get("resolved")]
+        # 统计摘要
+        lines.append(f"  历史提问: {total}次, 已解决{resolved_count}/{total}")
+        if unresolved:
+            unresolved_problems = [q.get("problem") or q.get("query_summary", "?") for q in unresolved]
+            lines.append(f"  未解决问题: {', '.join(unresolved_problems[:5])}")
+        # 最近 5 条
+        recent = question_history[-5:]
+        lines.append("  最近提问:")
+        for q in recent:
+            qdate = q.get("date", "?")[:10]
+            cat = q.get("category", "?")
+            summary = q.get("query_summary") or q.get("problem") or "?"
+            status = "✓" if q.get("resolved") else "✗"
+            lines.append(f"    [{qdate}] [{status}] {cat}: {summary}")
+
+    return "[用户画像]\n" + "\n".join(lines) if lines else ""
+
+
 def recall_memory(state: AgentState) -> dict:
-    """节点: 召回相关记忆（Redis短期上下文 + ChromaDB长期语义 + Redis长期重要性）
-
-    双通道长期记忆召回:
-      1. Redis Hash → 最近几轮对话的意图/设备/话题（精准，快）
-      2. ChromaDB → 与当前 query 语义相关的长期偏好（相关性通道，模糊匹配）
-      3. Redis Sorted Set → 权重最高的偏好 TopK（重要性通道，与 query 无关，快）
-      4. 去重合并后注入 memory_context 供后续节点使用
-
-    相关性通道(Chroma)保证"贴合此刻话题"，重要性通道(SortedSet)保证"永远重要的
-    骨干不被漏掉"；两条互补，Sorted Set 命中已在语义结果中的事实会被去重跳过。
-    """
+    """用户画像 + ChromaDB 语义记忆，两层互补注入 memory_context"""
     set_trace_id(state.get("trace_id", "-"))
     last_msg = state["messages"][-1]
     query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
@@ -161,52 +273,30 @@ def recall_memory(state: AgentState) -> dict:
     session_id = state.get("session_id", "default")
 
     context_parts = []
-    short_ctx = None
+    profile_ctx = ""
 
-    # ── 1. Redis 短期上下文 ──
+    # ── 1. 用户画像（JSON 文件，全量加载，O(1)）──
     try:
-        stm = get_short_memory()
-        short_ctx = stm.load(tenant_id, session_id)
-        if short_ctx:
-            recent = short_ctx.get("recent_msgs", [])
-            last_intent = short_ctx.get("last_intent", "")
-            if recent:
-                msgs_text = " | ".join(
-                    f"{m.get('role', '')}: {str(m.get('content', ''))[:80]}"
-                    for m in recent[-3:]  # 只取最近3轮
-                )
-                context_parts.append(f"[短期上下文] 最近对话: {msgs_text}")
-            if last_intent:
-                context_parts.append(f"[上次意图] {last_intent}")
+        profile_mgr = ProfileManager()
+        profile = profile_mgr.load(tenant_id)
+        profile_ctx = _format_profile(profile)
+        if profile_ctx:
+            context_parts.append(profile_ctx)
     except Exception as e:
-        logger.warning("Redis短期记忆读取失败: %s", e)
+        logger.warning("画像加载失败: %s", e)
 
-    # ── 2. ChromaDB 长期语义召回（相关性通道）──
+    # ── 2. ChromaDB 语义记忆（向量召回）──
     memory = get_memory()
-    semantic_ctx = memory.recall(query, session_id=session_id)
+    semantic_ctx = memory.recall(query, session_id=session_id, tenant_id=tenant_id)
     if semantic_ctx:
-        context_parts.append(f"[长期语义记忆]\n{semantic_ctx}")
-
-    # ── 3. Redis Sorted Set 长期偏好 TopK（重要性通道）──
-    important_ctx = None
-    try:
-        ltm = get_long_memory()
-        top_facts = ltm.topk(tenant_id, session_id, k=config.MEMORY_TOP_K)
-        # 去重: 语义通道已召回的事实不再重复注入
-        fresh = [(fact, score) for fact, score in top_facts if fact and fact not in semantic_ctx]
-        if fresh:
-            important_ctx = "\n".join(f"[权重:{score}] {fact}" for fact, score in fresh)
-            context_parts.append(f"[长期重要偏好]\n{important_ctx}")
-    except Exception as e:
-        logger.warning("Redis长期记忆读取失败: %s", e)
+        context_parts.append(f"[语义记忆]\n{semantic_ctx}")
 
     context = "\n".join(context_parts) if context_parts else ""
 
     logger.info(
-        "记忆召回: short=%s semantic=%s important=%s trace=%s",
-        "有" if short_ctx else "无",
+        "记忆召回: profile=%s semantic=%s trace=%s",
+        "有" if profile_ctx else "无",
         "有" if semantic_ctx else "无",
-        "有" if important_ctx else "无",
         state.get("trace_id", ""),
     )
 
@@ -221,7 +311,7 @@ def classify_intent(state: AgentState) -> dict:
     last_msg = state["messages"][-1]
     content = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
 
-    model = create_chat_model(temperature=0.0)
+    model = create_chat_model(temperature=0.0, model_name=config.INTENT_MODEL)
     t0 = time.time()
     response = model.invoke(
         [
@@ -243,7 +333,7 @@ def classify_intent(state: AgentState) -> dict:
     if intent not in INTENT_LABELS:
         intent = "general"
 
-    logger.info("意图分类: %s | tool_args=%s | is_report=%s", intent, parsed.get("tool_args"), parsed.get("is_report"))
+    logger.info("意图分类: %s | tool_args=%s | is_report=%s | latency=%.0fms", intent, parsed.get("tool_args"), parsed.get("is_report"), latency)
 
     return {
         "intent": intent,
@@ -256,6 +346,19 @@ def classify_intent(state: AgentState) -> dict:
 def handle_weather(state: AgentState) -> dict:
     """节点: 天气查询 —— 通过 MCP 协议调用 Go Weather Server"""
     city = state.get("tool_args", {}).get("city", "北京")
+
+    # 解析相对城市引用（"当前城市"、"这里"等）→ 从画像取 current_location
+    relative_cities = {"当前城市", "这里", "本地", "我所在的城市", "我在的城市", "我这"}
+    if city in relative_cities:
+        try:
+            profile_mgr = ProfileManager()
+            profile = profile_mgr.load(state.get("tenant_id", "default"))
+            current = profile.get("current_location", "")
+            if current:
+                logger.info("城市引用解析: '%s' → '%s'", city, current)
+                city = current
+        except Exception as e:
+            logger.warning("城市解析失败: %s", e)
 
     mcp = get_mcp_manager()
     conn = mcp.get_connection("weather")
@@ -299,11 +402,30 @@ def handle_user_report(state: AgentState) -> dict:
 
 
 def handle_knowledge_search(state: AgentState) -> dict:
-    """节点: 知识库搜索"""
+    """节点: 知识库搜索（检索失败时用原始提问回退一次）"""
     query = state.get("tool_args", {}).get("query", "")
+    last_msg = state["messages"][-1]
+    original_query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+
     if not query:
-        last_msg = state["messages"][-1]
-        query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+        query = original_query
+
+    if not config.RAG_LLM_ENABLED:
+        # A1 优化：handler 只做检索，LLM 留给 generate_final_answer
+        try:
+            from rag.rag import RagService
+            rag = RagService()
+            docs = rag.retrieve_documents(query, top_k=getattr(config, "RAG_RETRIEVE_TOP_K", 5))
+            # 第一次检索为空且 query 是提取的短词时，用原始提问回退一次
+            if not docs and query != original_query:
+                logger.info("首次检索为空(query=%s)，用原始提问回退", query[:50])
+                docs = rag.retrieve_documents(original_query.strip(), top_k=getattr(config, "RAG_RETRIEVE_TOP_K", 5))
+            if not docs:
+                return {"tool_name": "search_knowledge",
+                        "tool_result": "知识库中暂未收录该问题的专项文档，请结合产品通用知识回答用户"}
+            return {"tool_name": "search_knowledge", "tool_result": f"[检索到以下参考文档，请基于此回答]\n\n{docs}"}
+        except Exception as e:
+            return {"tool_name": "search_knowledge", "tool_result": str(e)}
 
     try:
         result = search_knowledge.invoke({"query": query})
@@ -346,7 +468,9 @@ def handle_knowledge_list(state: AgentState) -> dict:
 
 def handle_knowledge_delete(state: AgentState) -> dict:
     """节点: 删除知识库文档"""
-    source_name = state.get("tool_args", {}).get("source_name", "")
+    # 兼容 LLM 可能输出的两种参数名
+    tool_args = state.get("tool_args", {})
+    source_name = tool_args.get("source_name", "") or tool_args.get("filename", "")
 
     if not source_name:
         return {"tool_name": "delete_knowledge", "tool_result": "未指定要删除的文档名称"}
@@ -397,12 +521,36 @@ def generate_final_answer(state: AgentState) -> dict:
 
     model = create_chat_model()
     t0 = time.time()
-    response = model.invoke(
-        [
-            SystemMessage(content=system_msg),
-            *state["messages"],
-        ]
-    )
+
+    if config.STREAM_MODE == "stream":
+        # 真流式: 逐 token 产出，astream_events 捕获每个 chunk
+        chunks = []
+        full_content = []
+        for chunk in model.stream(
+            [
+                SystemMessage(content=system_msg),
+                *state["messages"],
+            ]
+        ):
+            chunks.append(chunk)
+            if chunk.content:
+                full_content.append(chunk.content)
+        # 合并为完整 AIMessage（Token 埋点需要）
+        if chunks:
+            response = chunks[0]
+            for c in chunks[1:]:
+                response += c
+        else:
+            response = chunks[0] if chunks else None
+    else:
+        # 原有路径: invoke 全量返回
+        response = model.invoke(
+            [
+                SystemMessage(content=system_msg),
+                *state["messages"],
+            ]
+        )
+
     latency = (time.time() - t0) * 1000
     # Token 埋点: 最终回答生成
     input_msgs = (
@@ -417,7 +565,7 @@ def generate_final_answer(state: AgentState) -> dict:
         latency_ms=latency,
     )
 
-    logger.info("最终回答生成完成: is_report=%s has_memory=%s", is_report, bool(memory_context))
+    logger.info("最终回答生成完成: is_report=%s has_memory=%s | latency=%.0fms", is_report, bool(memory_context), latency)
     return {"messages": [response]}
 
 
@@ -429,30 +577,11 @@ def save_memory(state: AgentState) -> dict:
     3. Redis Sorted Set → 长期偏好记忆（带权重衰减，用于快速TopK查询）
     """
     user_query = state.get("user_query", "")
-    intent = state.get("intent", "")
-    tool_name = state.get("tool_name", "")
     session_id = state.get("session_id", "default")
     tenant_id = state.get("tenant_id", "default")
 
     last_msgs = state.get("messages", [])
     assistant_msg = ""
-
-    # ── 1. Redis 短期上下文 ──
-    try:
-        stm = get_short_memory()
-        # 取最近20条消息作为滑动窗口
-        stm.save(
-            tenant_id=tenant_id,
-            session_id=session_id,
-            messages=last_msgs,
-            intent=intent,
-            tool_name=tool_name,
-            max_window=20,
-        )
-    except Exception as e:
-        logger.warning("Redis短期记忆写入失败: %s", e)
-
-    # ── 2. ChromaDB 长期语义（原有逻辑）──
     if last_msgs:
         last = last_msgs[-1]
         assistant_msg = last.content if hasattr(last, "content") else str(last)
@@ -461,25 +590,20 @@ def save_memory(state: AgentState) -> dict:
     if user_query and assistant_msg:
         try:
             memory = get_memory()
-            saved_facts = memory.save(user_query, assistant_msg, session_id=session_id)
+            saved_facts, profile_update = memory.save(
+                user_query, assistant_msg,
+                session_id=session_id, tenant_id=tenant_id,
+            )
         except Exception as e:
             logger.warning("ChromaDB 记忆存储失败: %s", e)
 
-    # ── 3. Redis Sorted Set 长期偏好 ──
-    if saved_facts:
+    # ── 画像增量合并 ──
+    if profile_update:
         try:
-            ltm = get_long_memory()
-            for fact in saved_facts:
-                importance = fact.get("importance", 3)
-                ltm.save(
-                    tenant_id=tenant_id,
-                    session_id=session_id,
-                    fact=fact.get("fact", ""),
-                    importance=float(importance),
-                )
-            logger.info("Redis长期记忆存储: %d 条 (trace=%s)", len(saved_facts), state.get("trace_id", ""))
+            profile_mgr = ProfileManager()
+            profile_mgr.merge(tenant_id, profile_update)
         except Exception as e:
-            logger.warning("Redis长期记忆写入失败: %s", e)
+            logger.warning("画像更新失败: %s", e)
 
     if saved_facts:
         logger.info("记忆已提取: %d 条事实 (session=%s)", len(saved_facts), session_id)

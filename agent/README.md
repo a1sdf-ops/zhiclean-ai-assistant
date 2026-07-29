@@ -1,6 +1,6 @@
 # Agent 部分 —— LangGraph 工作流编排
 
-基于自定义 LangGraph StateGraph 的 Agent 引擎，手动编排 **12 节点**工作流，集成**三层记忆系统**、**Token 成本追踪**、**多租户隔离**、**MCP 跨语言工具调度**，支持流式（SSE）和异步全量双模式。
+基于自定义 LangGraph StateGraph 的 Agent 引擎，手动编排 **12 节点**工作流，集成**两层记忆系统**（JSON 用户画像 + ChromaDB 语义记忆）、**Token 成本追踪**、**多租户隔离**、**MCP 跨语言工具调度**，支持流式（SSE）和异步全量双模式。
 
 ## 完整架构
 
@@ -13,7 +13,8 @@
 │                                                                  │
 │  ┌──────────────┐     ┌──────────────────┐                       │
 │  │ recall_memory│────▶│ classify_intent  │                       │
-│  │ (三层记忆召回)│     │ (LLM 意图分类)    │                       │
+│  │ (画像加载     │     │ (LLM 意图分类)    │                       │
+│  │  +语义召回)   │     │                  │                       │
 │  └──────────────┘     └───────┬──────────┘                       │
 │                               │                                   │
 │                    ┌──────────┼──────────┐                        │
@@ -30,24 +31,22 @@
 │                      └───────┬───────┘                            │
 │                              ▼                                     │
 │                      ┌──────────────────┐                         │
-│                      │ generate_final   │ (动态Prompt + 记忆注入)  │
+│                      │ generate_final   │ (动态Prompt + 画像注入)  │
 │                      └───────┬──────────┘                         │
 │                              ▼                                     │
 │                      ┌──────────────┐                             │
-│                      │ save_memory  │ (三层持久化写入)             │
+│                      │ save_memory  │ (LLM 提取事实+画像更新)      │
 │                      └──────┬───────┘                             │
 │                              │                                     │
 │                              ▼                                     │
 │                             END                                    │
 └──────────────────────────────────────────────────────────────────┘
-    │                    │                    │
-    ▼                    ▼                    ▼
-┌────────────┐   ┌──────────────┐   ┌────────────────┐
-│ Redis      │   │ ChromaDB     │   │ MCP 工具层      │
-│ Hash(短期) │   │ 向量语义记忆  │   │ Go Weather     │
-│ Sorted Set │   │              │   │ Python Knowledge│
-│ (长期偏好)  │   │              │   │ External Tools │
-└────────────┘   └──────────────┘   └────────────────┘
+    │                    │
+    ▼                    ▼
+┌────────────────┐   ┌──────────────┐
+│ JSON 用户画像   │   │ ChromaDB     │
+│ (per tenant)   │   │ 语义记忆      │
+└────────────────┘   └──────────────┘
 ```
 
 **关键设计决策**：
@@ -64,8 +63,8 @@ AgentState 采用 **TypedDict 强类型定义**，字段按功能分为五层：
 ```
 AgentState
 ├── [身份层] session_id / tenant_id / trace_id
-│   ├── session_id:   会话唯一标识，关联短期记忆 key
-│   ├── tenant_id:    租户/用户隔离标识，多租户场景下数据绝不串扰
+│   ├── session_id:   会话唯一标识
+│   ├── tenant_id:    租户/用户标识，由 MD5(session_id) 派生，同会话内稳定
 │   └── trace_id:     12位十六进制，一次 invoke 一个，全链路日志追踪
 │
 ├── [对话层] messages: Annotated[list, add_messages]
@@ -105,16 +104,12 @@ TokenTracker (全局单例)
 ├── record(module, input_tokens, output_tokens, latency_ms)
 │   └── 按模块名聚合累积 token 和调用次数
 ├── report() → dict
-│   └── 返回 {module: {total_tokens, input_tokens, output_tokens,
-│                      call_count, avg_latency_ms, pct}, ..., __total__}
+│   └── 返回 {module: {total_tokens, call_count, avg_latency_ms, pct}, ..., __total__}
 ├── reset()
 │   └── 清零所有统计数据
 │
 ├── estimate_tokens(text) → int
 │   └── 粗略估算（len(str(text)) // 3），精确值应从 API response.usage 获取
-│
-└── @track("module_name") 装饰器
-    └── 无侵入自动统计被装饰函数的输入/输出 token 和耗时
 ```
 
 ### 埋点位置（graph.py）
@@ -123,13 +118,15 @@ TokenTracker (全局单例)
 |------|---------|---------|
 | `llm_intent_classifier` | `classify_intent()` | 意图分类 LLM 调用的 token 消耗 |
 | `llm_generation` | `generate_final_answer()` | 最终回答生成 LLM 调用的 token 消耗 |
+| `llm_memory_extraction` | `_extract_facts()` | 记忆提取 LLM 调用的 token 消耗 |
 
 ### 输出示例
 
 ```
 Token报告: 总计=3870 tokens | {
   'llm_intent_classifier': 850,
-  'llm_generation': 3020
+  'llm_generation': 3020,
+  'llm_memory_extraction': 0
 } (trace=a1b2c3d4e5f6)
 ```
 
@@ -139,75 +136,125 @@ Token报告: 总计=3870 tokens | {
 
 ## 多租户隔离
 
-所有记忆存储的 key 都按 `{tenant_id}:{session_id}` 命名空间隔离：
+### tenant_id 派生方式
 
-```
-Redis Key 格式:
-  mem:st:{tenant_id}:{session_id}    ← 短期记忆 (Hash)
-  mem:lt:{tenant_id}:{session_id}    ← 长期记忆 (Sorted Set)
-
-ChromaDB 元数据:
-  {session_id: "xxx"}               ← 语义记忆过滤条件
-
-State 字段:
-  tenant_id                          ← 请求传入，贯穿整个图流转
-  session_id                         ← 不传则自动生成
+```python
+tenant_id = f"tenant_{md5(session_id).hexdigest()[:12]}"
 ```
 
-**隔离保证**：
-- 租户 A 的短期/长期记忆 key 永远不会与租户 B 冲突
-- ChromaDB 查询时按 `session_id` 过滤，不会漏出其他会话的数据
-- `agent_demo.py` / API 入口均支持 `--tenant` / `tenant_id` 参数
+不传 session_id 时自动生成，同 session 内 tenant_id 始终不变。
+
+### 画像隔离
+
+```
+data/profiles/{tenant_id}.json    ← JSON 文件，按 tenant_id 物理隔离
+```
+
+每个租户独立一个 JSON 文件，文件系统级别保证隔离，不存在跨租户数据串扰。
+
+### ChromaDB 语义记忆隔离
+
+ChromaDB 文档的 metadata 中含 `tenant_id` 字段，召回时过滤：
+```python
+self.store.similarity_search(query, k=top_k, filter={"tenant_id": tenant_id})
+```
+
+### State 字段
+
+```
+session_id                         ← 请求传入，不传则自动生成
+tenant_id                          ← MD5(session_id) 派生，贯穿整个图流转
+```
 
 ---
 
-## 三层记忆系统（`memory_store.py` + `utils/memory.py`）
+## 两层记忆系统（`utils/profile.py` + `utils/memory.py`）
 
-### 第一层：短期上下文 —— Redis Hash
+### 第一层：JSON 用户画像 —— 结构化长期记忆
 
 | 属性 | 说明 |
 |------|------|
-| 存储引擎 | Redis Hash |
-| Key | `mem:st:{tenant_id}:{session_id}` |
-| TTL | 72 小时（`config.SHORT_MEM_TTL_HOURS`），到期自动清理 |
-| 内容 | `recent_msgs`（最近 20 轮对话 JSON）、`last_intent`、`last_tool`、`conversation_turn` |
-| 操作 | `save()` 滑动窗口写入、`load()` 读取、`clear()` 手动清除 |
-| 用途 | 多轮对话快速获取"刚才聊了什么"，避免重复推理 |
+| 存储引擎 | JSON 文件 (`data/profiles/{tenant_id}.json`) |
+| 读写方式 | O(1) 全量加载，代码级增量 merge |
+| 内容 | 8 字段：devices(含 issues/usage/consumables)、current_location、locations[]、preferences、purchase_intent、service_history、question_history |
+| 提取方式 | LLM 从对话中提取 `profile_update`，代码负责 merge |
+| 用途 | 每次对话全量注入 system prompt，提供用户上下文 |
 
-### 第二层：长期语义记忆 —— ChromaDB
+### 第二层：ChromaDB 语义记忆 —— 向量离散事实
 
 | 属性 | 说明 |
 |------|------|
 | 存储引擎 | ChromaDB（向量数据库） |
-| 提取方式 | LLM 从对话中提取事实 → `text-embedding-v4` 生成向量 → 存储 |
-| 召回方式 | 语义相似度检索（与当前 query 做 embedding 匹配） |
+| 提取方式 | LLM 从对话中提取关键事实 → `text-embedding-v4` 生成向量 → 存储 |
+| 召回方式 | 语义相似度检索（按 `tenant_id` 过滤 + `source="agent_memory"`） |
 | 实现文件 | `utils/memory.py` MemoryManager |
 
-### 第三层：长期偏好记忆 —— Redis Sorted Set
-
-| 属性 | 说明 |
-|------|------|
-| 存储引擎 | Redis Sorted Set |
-| Key | `mem:lt:{tenant_id}:{session_id}` |
-| 数据结构 | `ZSET {fact: weight}`，weight 越高越重要 |
-| 衰减机制 | 每天 `weight *= DECAY_FACTOR`（默认 0.95），低于 `MIN_WEIGHT`（默认 0.1）自动淘汰 |
-| 召回方式 | `ZREVRANGE` 取 TopK（默认 K=5），与语义通道去重合并 |
-
-### 双通道召回策略（`graph.py` `recall_memory` 节点）
+### 召回策略（`graph.py` `recall_memory` 节点）
 
 ```
 recall_memory 节点
-├── 1. Redis Hash → 短期上下文（最近3轮对话 + 上次意图）
-├── 2. ChromaDB → 长期语义召回（与当前 query 向量相似）
-├── 3. Redis Sorted Set → 长期偏好 TopK（按权重降序）
-│   └── 去重: 已在语义通道命中的事实不再重复注入
-└── 合并为 memory_context 字符串 → 注入后续节点的 Prompt
+├── 1. JSON 画像 → 全量加载，O(1) 文件读取
+│      格式化后注入 memory_context（设备/城市/已知问题/耗材/提问摘要）
+│
+├── 2. ChromaDB → 语义向量召回（与当前 query 相似，按 tenant_id 过滤）
+│      召回的历史事实追加到 memory_context
+│
+└── 合并为 memory_context 字符串 → 注入 generate_final_answer 的 system prompt
 ```
 
 **核心设计理念**：
-- **语义通道（ChromaDB）** → 保证"贴合此刻话题"
-- **重要性通道（Sorted Set）** → 保证"永远重要的偏好不被遗漏"
-- 两条通道互补，去重合并，避免信息冗余
+- **画像层（JSON）** → 结构化的"用户是谁"：设备、位置、偏好、问题、提问历史
+- **语义层（ChromaDB）** → 离散的"用户说过什么"：历史对话中的具体事实
+- 两层互补，不重复。画像保证上下文完整，语义保证细节不丢失。
+
+---
+
+## 画像数据流
+
+```
+用户说 "我搬到了深圳，Z3 Ultra吸力变小了怎么处理"
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ save_memory 节点                                     │
+│                                                      │
+│ LLM 提取:                                            │
+│   profile_update = {                                 │
+│     "current_location": "深圳",                      │
+│     "devices": [{                                    │
+│       "model": "Z3 Ultra",                           │
+│       "issues": [{"problem": "吸力变小",             │
+│                    "status": "未解决"}]               │
+│     }],                                              │
+│     "question_entry": {                              │
+│       "category": "故障排查",                         │
+│       "device": "Z3 Ultra",                          │
+│       "problem": "吸力变小",                          │
+│       "query_summary": "吸力变小怎么处理",             │
+│       "resolved": false                              │
+│     }                                                │
+│   }                                                  │
+│    ↓                                                 │
+│ ProfileManager.merge(tenant_id, profile_update)      │
+│   → current_location 覆盖 "深圳"                     │
+│   → locations 追加 "深圳"                            │
+│   → Z3 Ultra issues 按 problem 名 merge              │
+│   → question_history FIFO 追加                       │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼ (下一轮对话)
+┌─────────────────────────────────────────────────────┐
+│ recall_memory 节点                                    │
+│   → ProfileManager.load(tenant_id)                   │
+│   → _format_profile(profile)                         │
+│   → 注入 system prompt:                              │
+│     "当前城市: 深圳                                    │
+│      设备: Z3 Ultra (每天清洁客厅木地板)                │
+│      已知问题: 吸力变小 [未解决]                        │
+│      历史提问: 4次, 已解决0/4                          │
+│      最近提问: [✗] 故障排查: 吸力变小怎么处理"          │
+└─────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -241,30 +288,31 @@ MCPClientManager (应用级单例)
 
 ---
 
-## 工具集（共 13 个）
+## 工具集（共 12 个）
 
 ### 知识库工具（7 个，`agent_tools.py`）
 
 | 工具 | 触发意图 | 说明 |
 |------|---------|------|
-| `search_knowledge` | `knowledge_search` | 语义搜索知识库 |
-| `upload_knowledge` | `knowledge_upload` | 上传文本到知识库 |
+| `search_knowledge` | `knowledge_search` | 语义搜索知识库（retrieve-only，不调 LLM） |
+| `upload_knowledge` | `knowledge_upload` | 上传文本到知识库（MD5 去重） |
 | `upload_knowledge_file` | `knowledge_upload` | 上传本地文件到知识库 |
 | `list_knowledge` | `knowledge_list` | 分页列出文档列表 |
 | `update_knowledge` | `knowledge_upload` | 更新文档内容 |
 | `update_knowledge_file` | `knowledge_upload` | 用文件更新文档 |
 | `delete_knowledge` | `knowledge_delete` | 按名称删除文档 |
 
-### 外部服务工具（6 个，`tools/external_tools.py`）
+### 外部服务工具（5 个，`tools/external_tools.py`）
 
 | 工具 | 来源 | 说明 |
 |------|------|------|
-| `get_weather` | Go MCP Server / Python fallback | 实时城市天气 |
+| `get_weather` | Go MCP Server / Python fallback | 实时城市天气（自动从画像解析"当前城市"） |
 | `get_user_id` | `config.OPERATOR_NAME` | 当前操作者标识 |
-| `get_user_location` | 环境变量 `DEFAULT_CITY` | 默认城市 |
 | `get_current_month` | `datetime.now()` | 当前月份 (YYYY-MM) |
 | `fetch_external_data` | `data/user_behavior.csv` | 用户月度使用记录 |
 | `fill_context_for_report` | 本地 | 激活报告生成模式 |
+
+> 注：`get_user_location` 已移除。天气查询的城市参数优先从用户画像的 `current_location` 自动解析，不再依赖环境变量。
 
 ---
 
@@ -302,6 +350,7 @@ MCPClientManager (应用级单例)
 | 模式 | 方法 | 返回方式 | 使用场景 |
 |------|------|---------|---------|
 | 流式（生产） | `execute_stream(query)` | `Iterator[str]` 逐 token yield | SSE 实时推送给前端 |
+| 异步流式（生产） | `aexecute_stream(query)` | `AsyncIterator[str]` 逐 token yield | SSE 端点异步推送 |
 | 异步全量（测试） | `ainvoke(query)` | `str` 完整回答 | 批处理/集成测试，附带 Token 报告 |
 
 ```python
@@ -330,16 +379,11 @@ agent/
 │                         #   五层字段: 身份层/对话层/路由层/工具层/记忆层/生成层
 │                         #   trace_id 生成、VALID_INTENTS 白名单
 │
-├── react_agent.py        # Graph 运行器: execute_stream() + ainvoke() 双模式
+├── react_agent.py        # Graph 运行器: execute_stream() + aexecute_stream() + ainvoke()
 │                         #   初始 state 构造（session/tenant/trace 注入）
 │
 ├── token_tracker.py      # Token 成本埋点: TokenTracker 分模块统计
-│                         #   record()/report()/reset() + @track 装饰器
-│                         #   estimate_tokens() 粗略估算
-│
-├── memory_store.py       # 三层记忆中的 Redis 两层
-│                         #   ShortTermMemory: Redis Hash, 72h TTL, 滑动窗口
-│                         #   LongTermMemory: Redis Sorted Set, 权重衰减, TopK
+│                         #   record()/report()/reset()
 │
 ├── mcp_client.py         # MCP 多服务器客户端管理器
 │                         #   MCPServerConnection: JSON-RPC over stdio
@@ -352,13 +396,15 @@ agent/
 │                         #   路由表 dispatch + checkpoint 回滚 + error_count 熔断
 │
 ├── tools/
-│   └── external_tools.py # 6 个外部工具: 天气/用户ID/位置/月份/使用数据/报告标记
+│   └── external_tools.py # 5 个外部工具: 天气/用户ID/月份/使用数据/报告标记
 │
 ├── agent_demo.py         # CLI 交互式对话入口（开发调试用）
 ├── app_qa.py             # Streamlit 问答 UI
 ├── app_upload.py         # Streamlit 文档上传 UI
 └── __init__.py
 ```
+
+> 注：`memory_store.py`（Redis 短期+长期记忆）已删除。记忆存储逻辑由 `utils/profile.py`（JSON 画像）和 `utils/memory.py`（ChromaDB 语义记忆）承担，不再依赖 Redis。
 
 ---
 
@@ -368,7 +414,7 @@ agent/
 
 ```bash
 cd agent
-python agent_demo.py --tenant my_user
+python agent_demo.py
 ```
 
 ### FastAPI 端点
@@ -377,13 +423,15 @@ python agent_demo.py --tenant my_user
 # 流式对话
 curl -X POST http://localhost:8000/api/v1/agent/stream \
   -H "Content-Type: application/json" \
-  -d '{"query": "Z2 Pro滤网怎么保养？", "session_id": "s1", "tenant_id": "u1"}'
+  -d '{"query": "Z2 Pro滤网怎么保养？", "session_id": "s1"}'
 
 # 非流式
 curl -X POST http://localhost:8000/api/v1/agent/chat \
   -H "Content-Type: application/json" \
-  -d '{"query": "你好", "session_id": "s1", "tenant_id": "u1"}'
+  -d '{"query": "你好", "session_id": "s1"}'
 ```
+
+> 注：API 不再需要传 `tenant_id`，后端从 `session_id` 自动派生。
 
 ### Streamlit UI（开发调试）
 
