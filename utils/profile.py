@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,7 +30,7 @@ from utils.logger_handler import logger
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class ProfileManager:
@@ -71,7 +71,7 @@ class ProfileManager:
         if not os.path.exists(path):
             return self._empty_profile()
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 profile = json.load(f)
             return self._ensure_fields(profile)
         except (json.JSONDecodeError, OSError) as e:
