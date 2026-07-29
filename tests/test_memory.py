@@ -59,8 +59,11 @@ class TestMemoryExtraction:
         user_msg = "你好，我是陈磊，在北京化工大学读书，我的扫地机器人型号是Z2 Pro"
         assistant_msg = "你好陈磊！Z2 Pro是一款很不错的扫拖一体机器人，有什么可以帮助你的吗？"
 
-        facts = m._extract_facts(user_msg, assistant_msg)
+        facts, profile_update = m._extract_facts(user_msg, assistant_msg)
         assert isinstance(facts, list)
+        # profile_update 可以为 None 或 dict
+        if profile_update is not None:
+            assert isinstance(profile_update, dict)
         if facts:  # LLM 提取到了事实
             assert all("fact" in f for f in facts)
             assert all("category" in f for f in facts)
@@ -77,8 +80,10 @@ class TestMemoryExtraction:
         user_msg = "我叫张伟，是一名软件工程师，主要做后端开发，用的编程语言是Python和Go"
         assistant_msg = "了解了张伟，Python和Go都是很适合后端的语言。"
 
-        facts = m.save(user_msg, assistant_msg, session_id=session)
+        facts, profile_update = m.save(user_msg, assistant_msg, session_id=session)
         assert isinstance(facts, list)
+        if profile_update is not None:
+            assert isinstance(profile_update, dict)
 
         # 召回
         recalled = m.recall("张伟是做什么的", session_id=session)
