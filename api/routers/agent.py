@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
+import config
 from agent.token_tracker import get_tracker
 from api.dependencies import get_agent
 from api.schemas.agent import AgentChatRequest, AgentChatResponse
@@ -26,20 +27,38 @@ async def agent_chat(req: AgentChatRequest, agent=Depends(get_agent)):
 async def agent_stream(req: AgentChatRequest, agent=Depends(get_agent)):
     """Agent 流式对话（SSE）"""
 
-    def generate():
-        for token in agent.execute_stream(req.query, req.session_id, req.tenant_id):
-            yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
+    if config.STREAM_MODE == "stream":
+        # 真流式: astream_events 逐 token 推送
+        async def generate():
+            async for token in agent.aexecute_stream(req.query, req.session_id, req.tenant_id):
+                yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    else:
+        # 原有路径: invoke 模式，节点级粒度
+        def generate():
+            for token in agent.execute_stream(req.query, req.session_id, req.tenant_id):
+                yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
 
 @router.post("/invoke", response_model=AgentChatResponse)

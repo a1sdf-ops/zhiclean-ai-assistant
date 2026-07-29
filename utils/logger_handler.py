@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 import threading
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
@@ -43,24 +43,37 @@ root_logger = logging.getLogger()
 for h in root_logger.handlers:
     h.addFilter(TraceFilter())
 
-file_handler = RotatingFileHandler(
+# 每日轮转文件日志（保留 365 天，永久可追溯）
+# 文件名格式: app.log.2026-07-28, app.log.2026-07-27, ...
+daily_handler = TimedRotatingFileHandler(
     os.path.join(config.LOG_DIR, "app.log"),
-    maxBytes=config.LOG_MAX_BYTES,
-    backupCount=config.LOG_BACKUP_COUNT,
+    when="midnight",
+    interval=1,
+    backupCount=getattr(config, "LOG_BACKUP_COUNT", 365),
     encoding="utf-8",
 )
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(
+daily_handler.suffix = "%Y-%m-%d"  # 轮转后缀用日期，不用默认的 .YYYY-MM-DD
+daily_handler.setLevel(logging.DEBUG)
+daily_handler.setFormatter(
     logging.Formatter(
         "%(asctime)s | %(levelname)-7s | %(trace_id)s | %(name)s | %(filename)s:%(lineno)d | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 )
-file_handler.addFilter(TraceFilter())
-root_logger.addHandler(file_handler)
+daily_handler.addFilter(TraceFilter())
+root_logger.addHandler(daily_handler)
 
-# 禁用 LangChain / httpx 等三方库的 DEBUG 日志噪音
-for noisy in ["langchain", "langchain_core", "httpx", "httpcore", "openai", "chromadb"]:
-    logging.getLogger(noisy).setLevel(logging.WARNING)
+# 白名单模式: 只让项目自身的 logger 输出 DEBUG，其余全部 WARNING
+# 避免未来新增任何第三方库的 DEBUG 噪音（embedding 向量、HTTP 响应体等）
+root_logger.setLevel(logging.WARNING)
+logging.getLogger("agent-app").setLevel(logging.DEBUG)
+logging.getLogger("agent").setLevel(logging.DEBUG)
+logging.getLogger("api").setLevel(logging.DEBUG)
+logging.getLogger("rag").setLevel(logging.DEBUG)
+logging.getLogger("utils").setLevel(logging.DEBUG)
+logging.getLogger("model").setLevel(logging.DEBUG)
+
+# 显式压制：这些 SDK 内部自己 setLevel(DEBUG)，root=WARNING 挡不住
+logging.getLogger("dashscope").setLevel(logging.WARNING)
 
 logger = logging.getLogger("agent-app")

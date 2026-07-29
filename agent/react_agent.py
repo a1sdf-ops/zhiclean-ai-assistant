@@ -1,6 +1,7 @@
 """ReAct Agent —— 基于自定义 LangGraph StateGraph（specific 模式）
 
-生产路径: execute_stream() → graph.stream() → SSE
+生产路径: execute_stream() → graph.stream() → SSE          (invoke 模式)
+生产路径: execute_stream_async() → astream_events() → SSE  (stream 模式)
 测试路径: ainvoke() → graph.ainvoke() → 全量返回
 """
 
@@ -13,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain_core.messages import HumanMessage
 
+import config
 from agent.state import generate_trace_id
 from utils.logger_handler import logger
 
@@ -29,7 +31,8 @@ class ReactAgent:
         if not session_id:
             session_id = f"session_{generate_trace_id()}"
         if not tenant_id:
-            tenant_id = f"tenant_{generate_trace_id()}"
+            import hashlib
+            tenant_id = f"tenant_{hashlib.md5(session_id.encode()).hexdigest()[:12]}"
 
         initial_state = {
             "messages": [HumanMessage(content=query)],
@@ -62,6 +65,22 @@ class ReactAgent:
                 text = last.content
                 if isinstance(text, str):
                     yield text
+
+    async def aexecute_stream(self, query: str, session_id: str = "", tenant_id: str = "") -> AsyncIterator[str]:
+        """真流式执行: astream_events 捕获 LLM token 级事件（stream 模式）
+
+        只捕获 generate_final_answer 节点的流事件，过滤 classify_intent / save_memory。
+        """
+        initial_state = self._build_initial_state(query, session_id, tenant_id)
+        async for event in self.graph.astream_events(initial_state, version="v2"):
+            if event["event"] == "on_chat_model_stream":
+                # 只推送 generate_final_answer 的 token，分类和记忆的 LLM 输出不推前端
+                node = event.get("metadata", {}).get("langgraph_node", "")
+                if node != "generate_final_answer":
+                    continue
+                chunk = event["data"]["chunk"]
+                if hasattr(chunk, "content") and chunk.content:
+                    yield chunk.content
 
     async def ainvoke(self, query: str, session_id: str = "", tenant_id: str = "") -> str:
         """异步全量执行，返回完整回答（测试路径）"""

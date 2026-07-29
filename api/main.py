@@ -69,3 +69,14 @@ app.include_router(knowledge.router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": "2.0.0"}
+
+
+@app.get("/token-stats")
+async def token_stats():
+    """Token 消耗统计（SQLite 历史数据）"""
+    from agent.token_tracker import get_tracker
+    tracker = get_tracker()
+    return {
+        "session": tracker.report(),
+        "history": tracker.cost_report(limit=20),
+    }

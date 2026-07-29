@@ -1,16 +1,4 @@
 services:
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
   api:
     build:
       context: .
@@ -23,12 +11,6 @@ services:
       - QWEATHER_API_KEY=${QWEATHER_API_KEY:-}
       - DEFAULT_CITY=${DEFAULT_CITY:-北京}
       - OPERATOR_NAME=${OPERATOR_NAME:-admin}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_DB=0
-    depends_on:
-      redis:
-        condition: service_healthy
     volumes:
       - chroma_data:/app/data/chroma_db
       - chat_history:/app/data/chat_history
@@ -44,4 +26,3 @@ volumes:
   chroma_data:
   chat_history:
   model_cache:
-  redis_data:

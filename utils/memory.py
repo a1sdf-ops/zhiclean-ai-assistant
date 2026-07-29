@@ -17,14 +17,42 @@ import config
 from model.factory import create_chat_model, create_embedding_model
 from utils.logger_handler import logger
 
-MEMORY_EXTRACTION_PROMPT = """分析以下对话，提取对后续交互有价值的用户信息。以 JSON 数组返回，每条包含：
+MEMORY_EXTRACTION_PROMPT = """分析以下对话，提取两部分信息：
 
-- "fact": 事实描述（简明扼要，一句以内）
-- "category": 类别（preference / identity / context / knowledge）
-- "importance": 重要性 1-5（5=必须记住，1=顺便提及）
+1. "facts": 对后续交互有价值的离散事实数组，每条包含：
+   - "fact": 事实描述（简明扼要，一句以内）
+   - "category": 类别（preference / identity / context / knowledge）
+   - "importance": 重要性 1-5（5=必须记住，1=顺便提及）
+   只提取用户相关的信息，不提取助手回答中的通用知识。没有则返回 []。
 
-只提取用户相关的信息，不提取助手回答中的通用知识。如果没有值得长期记忆的信息，返回空数组 []。
+2. "profile_update": 用户画像更新。
+   **主动推断规则**：
+   - 用户说"我的XX产品"、"XX怎么保养/使用/设置" → 推断拥有该设备，填写 devices
+   - 用户说"搬到了/搬到/移居/搬家到/现在在 某城市" → 提取 current_location
+   - 用户问产品对比、新品咨询 → 可能有意向，提取 purchase_intent
+   - 用户提到维修/报修/换货/售后经历 → 提取 service_history
+   - 用户问"最近XX怎么不行了"等持续性问题 → 推断问题未解决
 
+   **可提取字段**（只填写有实际依据的字段，不编造）：
+   {{
+     "devices": [{{
+       "model": "产品型号",
+       "purchased": "购买日期(可选)",
+       "usage": {{"frequency": "每天一次", "primary_area": "客厅", "floor_type": "木地板", "has_pets": false}},
+       "issues": [{{"problem": "问题描述", "status": "未解决/已解决", "attempted_solutions": ["已尝试方案"]}}],
+       "consumables": {{"hepa_filter": {{"last_replaced": "2026-07"}}, "side_brush": {{...}}, "main_brush": {{...}}, "mop_pad": {{...}}, "dust_bag": {{...}}}}
+     }}],
+     "current_location": "当前居住城市",
+     "locations": ["城市名(历史记录)"],
+     "preferences": {{"tech_level": "入门/进阶/专家", "reply_style": "简要/详细步骤/表格对比"}},
+     "purchase_intent": [{{"product": "产品名", "level": "高/中/低"}}],
+     "service_history": [{{"date": "日期", "type": "维修/咨询/退换", "device": "设备型号", "description": "简述"}}],
+     "question_entry": {{"category": "故障排查/保养维护/功能咨询/售后政策/耗材/产品对比/天气/闲聊", "device": "设备型号(可选)", "problem": "标准化问题描述(可选)", "query_summary": "一句话概括用户问题", "resolved": true/false}}
+   }}
+   如果本轮对话没有新的画像信息可提取，profile_update 为 null。
+   question_entry 每轮对话必须提取，和其他字段独立。
+
+返回 JSON：{{"facts": [...], "profile_update": {{...}} 或 null}}
 仅输出 JSON，不要其他内容。
 
 对话：
@@ -55,51 +83,53 @@ class MemoryManager:
 
     # ---------- 写入 ----------
 
-    def save(self, user_msg: str, assistant_msg: str, session_id: str = "default") -> list[dict]:
-        """从一轮对话中提取事实并持久化，返回提取到的事实列表"""
+    def save(self, user_msg: str, assistant_msg: str, session_id: str = "default", tenant_id: str = "default") -> tuple[list[dict], dict | None]:
+        """从一轮对话中提取事实并持久化，返回 (事实列表, 画像更新)"""
         if not self._enabled or self.store is None:
-            return []
+            return [], None
 
-        facts = self._extract_facts(user_msg, assistant_msg)
-        if not facts:
-            return []
+        facts, profile_update = self._extract_facts(user_msg, assistant_msg)
+        if not facts and not profile_update:
+            return [], None
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        texts, metadatas, ids = [], [], []
 
-        for i, f in enumerate(facts):
-            texts.append(f["fact"])
-            metadatas.append(
-                {
-                    "session_id": session_id,
-                    "category": f.get("category", "context"),
-                    "importance": f.get("importance", 3),
-                    "timestamp": timestamp,
-                    "source": "agent_memory",
-                }
-            )
-            ids.append(f"mem_{session_id}_{timestamp.replace(':', '').replace(' ', '_')}_{i}")
+        if facts:
+            texts, metadatas, ids = [], [], []
+            for i, f in enumerate(facts):
+                texts.append(f["fact"])
+                metadatas.append(
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "category": f.get("category", "context"),
+                        "importance": f.get("importance", 3),
+                        "timestamp": timestamp,
+                        "source": "agent_memory",
+                    }
+                )
+                ids.append(f"mem_{tenant_id}_{session_id}_{timestamp.replace(':', '').replace(' ', '_')}_{i}")
 
-        try:
-            self.store.add_texts(texts, metadatas=metadatas, ids=ids)
-            logger.info("记忆已存储: %d 条 (session=%s)", len(facts), session_id)
-        except Exception as e:
-            logger.warning("记忆存储失败: %s", e)
+            try:
+                self.store.add_texts(texts, metadatas=metadatas, ids=ids)
+                logger.info("记忆已存储: %d 条 (tenant=%s session=%s)", len(facts), tenant_id, session_id)
+            except Exception as e:
+                logger.warning("记忆存储失败: %s", e)
 
-        return facts
+        return facts, profile_update
 
-    def _extract_facts(self, user_msg: str, assistant_msg: str) -> list[dict]:
-        """用 LLM 从对话中提取关键事实"""
+    def _extract_facts(self, user_msg: str, assistant_msg: str) -> tuple[list[dict], dict | None]:
+        """用 LLM 从对话中提取关键事实 + 画像更新"""
+        raw = ""
         try:
             import time as _time
 
             from agent.token_tracker import estimate_tokens, get_tracker
 
             model = create_chat_model(temperature=0.0)
-            prompt = MEMORY_EXTRACTION_PROMPT.format(
-                user_msg=user_msg,
-                assistant_msg=assistant_msg,
-            )
+            # 用 replace 而非 .format()：助手的回答中可能包含 JSON
+            # （如 {"model": "Z2 Pro"}），.format() 会把花括号当占位符
+            prompt = MEMORY_EXTRACTION_PROMPT.replace("{user_msg}", user_msg).replace("{assistant_msg}", assistant_msg)
             t0 = _time.time()
             response = model.invoke(prompt)
             latency = (_time.time() - t0) * 1000
@@ -116,15 +146,23 @@ class MemoryManager:
                 raw = raw.split("\n", 1)[1]
                 if raw.endswith("```"):
                     raw = raw[:-3]
-            facts = json.loads(raw)
-            return facts if isinstance(facts, list) else []
+            result = json.loads(raw)
+
+            facts = result.get("facts", []) if isinstance(result, dict) else []
+            profile_update = result.get("profile_update") if isinstance(result, dict) else None
+
+            logger.info("记忆提取LLM: %d 条事实, profile=%s | latency=%.0fms",
+                        len(facts) if isinstance(facts, list) else 0,
+                        "有" if profile_update else "无",
+                        latency)
+            return (facts if isinstance(facts, list) else []), profile_update
         except Exception as e:
-            logger.warning("记忆提取失败: %s", e)
-            return []
+            logger.warning("记忆提取失败: %s | raw=%s", e, raw[:200] if raw else "(无输出)")
+            return [], None
 
     # ---------- 召回 ----------
 
-    def recall(self, query: str, session_id: str = None, top_k: int = None) -> str:
+    def recall(self, query: str, session_id: str = None, tenant_id: str = None, top_k: int = None) -> str:
         """语义搜索相关长期记忆，返回拼接后的上下文字符串"""
         if not self._enabled or self.store is None:
             return ""
@@ -138,9 +176,18 @@ class MemoryManager:
             if count == 0:
                 return ""
 
-            filter_dict = None
+            # ChromaDB where 多条件需用 $and 包裹
+            conditions = []
+            if tenant_id:
+                conditions.append({"tenant_id": tenant_id})
             if session_id:
-                filter_dict = {"session_id": session_id}
+                conditions.append({"session_id": session_id})
+            if len(conditions) == 1:
+                filter_dict = conditions[0]
+            elif len(conditions) > 1:
+                filter_dict = {"$and": conditions}
+            else:
+                filter_dict = None
 
             docs = self.store.similarity_search(query, k=min(top_k, count), filter=filter_dict)
             if not docs:

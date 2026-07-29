@@ -38,9 +38,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 # ============ 模型配置 ============
-CHAT_MODEL_NAME = os.getenv("CHAT_MODEL", "qwen-plus")
+CHAT_MODEL_NAME = os.getenv("CHAT_MODEL", "qwen-plus")  # 回答生成 / 记忆提取用
+INTENT_MODEL = os.getenv("INTENT_MODEL", os.getenv("CHAT_MODEL", "qwen-plus"))  # 意图分类可单独降级
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+RAG_LLM_ENABLED = os.getenv("RAG_LLM_ENABLED", "true").lower() == "true"  # false=handler只检索不调LLM
 
 # ============ 路径 ============
 RAG_DIR = os.path.join(PROJECT_ROOT, "rag")
@@ -54,8 +56,7 @@ TOKEN_DB_PATH = os.path.join(DATA_DIR, "token_usage.db")
 
 # ============ 日志 ============
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
-LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB 单文件上限
-LOG_BACKUP_COUNT = 5  # 保留 5 个历史文件
+LOG_BACKUP_COUNT = 365  # 按天轮转，保留 365 天历史日志
 
 # ============ Chroma ============
 COLLECTION_NAME = "rag_project_v2"
@@ -69,6 +70,7 @@ MAX_SPLIT_CHAR_NUMBER = 1000
 # ============ 检索 ============
 RETRIEVER_K = 8
 RERANK_TOP_K = 4
+RAG_RETRIEVE_TOP_K = 5  # A1 优化：handler 只返回 top-K 文档给 generate（仅 RAG_LLM_ENABLED=false 时生效）
 ENABLE_RERANK = True
 ENABLE_HYBRID = True  # 启用 BM25 + 向量混合检索（RRF 融合）
 BM25_K1 = 1.5  # BM25 词频饱和因子
@@ -78,18 +80,16 @@ RRF_K = 60  # RRF 融合排名阻尼系数
 # ============ Agent ============
 OPERATOR_NAME = os.getenv("OPERATOR_NAME", "admin")
 
-# ============ Redis ============
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-SHORT_MEM_TTL_HOURS = int(os.getenv("SHORT_MEM_TTL_HOURS", "72"))
-DECAY_FACTOR = float(os.getenv("DECAY_FACTOR", "0.95"))
-MIN_WEIGHT = float(os.getenv("MIN_WEIGHT", "0.1"))
-
 # ============ Memory ============
 ENABLE_MEMORY = True  # 启用 Agent 长期记忆
 MEMORY_COLLECTION = "agent_memories"  # ChromaDB collection 名称
 MEMORY_TOP_K = 4  # 每次召回记忆条数
+PROFILE_DIR = os.path.join(DATA_DIR, "profiles")  # 用户画像 JSON 文件目录
+
+# ============ Streaming ============
+# "invoke" = 原有路径，节点完成后再 yield（安全、方便调试）
+# "stream" = 真流式，LLM 逐 token 推送到 SSE 前端
+STREAM_MODE = os.getenv("STREAM_MODE", "invoke")
 
 # ============ FastAPI ============
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

@@ -124,6 +124,28 @@ class RagService:
             history_messages_key="history",
         )
 
+    def retrieve_documents(self, query: str, top_k: int = None) -> str:
+        """纯文档检索（无 LLM），返回检索到的文档片段文本"""
+        if config.ENABLE_HYBRID:
+            retriever = HybridRetriever(self.vector_service.vector_store)
+        else:
+            retriever = self.vector_service.get_retriever()
+
+        docs = retriever.invoke(query)
+        docs = self.reranker.rerank_documents(query, docs)
+
+        if top_k:
+            docs = docs[:top_k]
+
+        if not docs:
+            return ""
+
+        lines = []
+        for i, d in enumerate(docs, 1):
+            source = d.metadata.get("source", d.metadata.get("filename", "未知"))
+            lines.append(f"[文档{i}] 来源:{source}\n{d.page_content}")
+        return "\n\n---\n\n".join(lines)
+
     def ask_stream(self, question: str, session_id: str = "default") -> Iterator[str]:
         """流式问答，逐 token 返回"""
         stream_chain = self._get_stream_chain()
