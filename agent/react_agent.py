@@ -83,6 +83,20 @@ class ReactAgent:
                 if hasattr(chunk, "content") and chunk.content:
                     yield chunk.content
 
+    def close_session(self, messages: list[str], session_id: str = "", tenant_id: str = "") -> str | None:
+        """关闭会话，生成排障过程摘要并写入 ChromaDB。
+
+        messages: ["用户: ...", "助手: ..."] 交替的完整对话文本列表
+        返回: 生成的摘要文本，失败返回 None
+        """
+        if not tenant_id:
+            import hashlib
+            tenant_id = f"tenant_{hashlib.md5(session_id.encode()).hexdigest()[:12]}"
+
+        from agent.graph import get_memory
+        memory = get_memory()
+        return memory.close_session(messages, tenant_id, session_id)
+
     async def ainvoke(self, query: str, session_id: str = "", tenant_id: str = "") -> str:
         """异步全量执行，返回完整回答（测试路径）"""
         from agent.token_tracker import get_report

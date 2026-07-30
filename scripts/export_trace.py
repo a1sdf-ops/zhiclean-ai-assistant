@@ -24,8 +24,9 @@ LOG_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \| (\w+)\s*\| (
 LATENCY_PATTERNS = {
     "意图分类": re.compile(r"意图分类: (\S+) \|.*latency=(\d+)ms"),
     "最终回答生成": re.compile(r"最终回答生成完成:.*latency=(\d+)ms"),
-    "记忆提取LLM": re.compile(r"记忆提取LLM: (\d+) 条事实 \| latency=(\d+)ms"),
-    "记忆存储": re.compile(r"记忆已存储: (\d+) 条"),
+    "记忆提取LLM": re.compile(r"画像提取: profile=\S+ \| latency=(\d+)ms"),
+    "记忆存储": re.compile(r"session_summary 写入.*成功"),
+    "session关闭": re.compile(r"close_session 完成.*latency=(\d+)ms"),
     "记忆召回": re.compile(r"记忆召回: (\d+) 条"),
     "总请求耗时": re.compile(r"(POST|GET) (\S+) -> (\d+) \((\d+)ms\)"),
 }
@@ -148,8 +149,7 @@ def cmd_show(trace_id):
             )
             print(f"回答生成:   {latency['generate_latency']}ms" if latency["generate_latency"] else "回答生成:   N/A")
             mem_lat = latency["memory_extract_latency"]
-            mem_n = latency["memory_extract_facts"]
-            print(f"记忆提取:   {mem_n}条事实 | {mem_lat}ms" if mem_lat else "记忆提取:   N/A")
+            print(f"画像提取:   {mem_lat}ms" if mem_lat else "画像提取:   N/A")
             print("--- 完整事件时间线 ---")
             for e in events:
                 print(f"  {e['ts']} | {e['level']:<7} | {e['file']}:{e['line']} | {e['msg'][:120]}")

@@ -50,10 +50,12 @@ class TestGraphCompilation:
 
     @requires_api
     def test_graph_stream_basic(self):
+        from langchain_core.messages import HumanMessage
+
         graph = build_graph()
         chunks = list(
             graph.stream(
-                {"messages": [{"role": "user", "content": "你好"}]},
+                {"messages": [HumanMessage(content="你好")]},
                 stream_mode="values",
             )
         )

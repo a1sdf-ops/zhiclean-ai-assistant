@@ -4,12 +4,12 @@ Profile 结构:
   devices:         [{"model": "Z3 Ultra", "purchased": "2026-07",
                      "usage": {frequency, primary_area, floor_type, has_pets},
                      "issues": [{"problem": "", "status": "未解决/已解决", "attempted_solutions": []}],
-                     "consumables": {"hepa_filter": {"last_replaced": "2026-06"}, ...}}]
+                     "consumables": [{"name": "hepa_filter", "last_replaced": "2026-06", "cycle_days": 90}]}]
   current_location: "深圳"
-  locations:       ["北京", "深圳"]  (历史)
-  preferences:     {"tech_level": "进阶", "reply_style": "详细步骤"}
-  purchase_intent: [{"product": "Z3 Ultra", "level": "高"}]
-  service_history: [{"date": "", "type": "", "device": "", "description": ""}]
+  preferences:     {"receive_maintain_remind": true, "remind_time": "每周一"}
+  purchase_intent: [{"product": "Z3 Ultra", "level": "高", "last_asked": "..."}]
+  service_history: [{"service_type": "上门维修", "target_device": "Z3 Ultra",
+                     "service_time": "2026-07-25", "result": "更换HEPA滤网", "resolved": true}]
   question_history: [{"date": "", "category": "", "device": "", "problem": "", "query_summary": "", "resolved": false}]  (FIFO, max 100)
 
 读取: <1ms 文件 I/O，写入: <1ms JSON dump
@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,7 +30,7 @@ from utils.logger_handler import logger
 
 
 def _now() -> str:
-    return datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class ProfileManager:
@@ -46,23 +46,47 @@ class ProfileManager:
     def _empty_profile(self) -> dict:
         return {
             "devices": [],
-            "locations": [],
             "current_location": "",
-            "preferences": {},
+            "preferences": {"receive_maintain_remind": True, "remind_time": "每周一"},
             "purchase_intent": [],
             "service_history": [],
             "question_history": [],
         }
 
     def _ensure_fields(self, profile: dict) -> dict:
-        """补齐缺失字段 + 迁移旧格式 issues（string→结构化）"""
+        """补齐缺失字段 + 迁移旧格式"""
         for key, val in self._empty_profile().items():
             if key not in profile:
                 profile[key] = val
+        # 删除废弃的 locations 数组
+        profile.pop("locations", None)
+        # 迁移旧格式 preferences（空对象 → 结构化）
+        if not profile.get("preferences") or profile["preferences"] == {}:
+            profile["preferences"] = self._empty_profile()["preferences"]
+        # 迁移旧格式 service_history（date/type/device/description → 新字段）
+        for i, s in enumerate(profile.get("service_history", [])):
+            if "date" in s or "type" in s:
+                profile["service_history"][i] = {
+                    "service_type": s.get("type", s.get("service_type", "")),
+                    "target_device": s.get("device", s.get("target_device", "")),
+                    "service_time": str(s.get("date", s.get("service_time", ""))),
+                    "result": s.get("description", s.get("result", "")),
+                    "resolved": bool(s.get("resolved", False)),
+                }
         for d in profile.get("devices", []):
+            # 迁移旧格式 issues（string→结构化）
             issues = d.get("issues", [])
             if issues and isinstance(issues[0], str):
                 d["issues"] = [{"problem": s, "status": "未解决"} for s in issues]
+            # 迁移旧格式 consumables（dict→数组）
+            consumables = d.get("consumables", None)
+            if consumables is None:
+                d["consumables"] = []
+            elif isinstance(consumables, dict):
+                d["consumables"] = [
+                    {"name": name, "last_replaced": val.get("last_replaced"), "cycle_days": val.get("cycle_days", 90)}
+                    for name, val in consumables.items()
+                ]
         return profile
 
     def load(self, tenant_id: str) -> dict:
@@ -96,8 +120,8 @@ class ProfileManager:
     # ---------- 合并 ----------
 
     def _normalize_device(self, dev: dict) -> dict:
-        """补全设备字段默认值，迁移旧格式 issues"""
-        d = {"model": dev.get("model", ""), "issues": [], "consumables": {}}
+        """补全设备字段默认值，迁移旧格式"""
+        d = {"model": dev.get("model", ""), "issues": [], "consumables": []}
         if "purchased" in dev:
             d["purchased"] = dev["purchased"]
         if "usage" in dev and dev["usage"]:
@@ -108,8 +132,15 @@ class ProfileManager:
                 d["issues"] = [{"problem": s, "status": "未解决"} for s in issues]
             else:
                 d["issues"] = issues
-        if "consumables" in dev and dev["consumables"]:
-            d["consumables"] = dev["consumables"]
+        consumables = dev.get("consumables", [])
+        if consumables:
+            if isinstance(consumables, dict):
+                d["consumables"] = [
+                    {"name": name, "last_replaced": val.get("last_replaced"), "cycle_days": val.get("cycle_days", 90)}
+                    for name, val in consumables.items()
+                ]
+            else:
+                d["consumables"] = consumables
         return d
 
     def _merge_device(self, existing: dict, update: dict):
@@ -147,12 +178,29 @@ class ProfileManager:
             existing.setdefault("usage", {}).update(update["usage"])
 
         if "consumables" in update and update["consumables"]:
-            existing.setdefault("consumables", {})
-            for key, val in update["consumables"].items():
-                if key in existing["consumables"]:
-                    existing["consumables"][key].update(val)
+            existing.setdefault("consumables", [])
+            # 迁移旧格式 consumables（dict→数组）
+            if isinstance(existing["consumables"], dict):
+                existing["consumables"] = [
+                    {"name": name, "last_replaced": val.get("last_replaced"), "cycle_days": val.get("cycle_days", 90)}
+                    for name, val in existing["consumables"].items()
+                ]
+            updates = update["consumables"]
+            if isinstance(updates, dict):
+                updates = [
+                    {"name": name, "last_replaced": val.get("last_replaced"), "cycle_days": val.get("cycle_days", 90)}
+                    for name, val in updates.items()
+                ]
+            existing_names = {c.get("name", ""): c for c in existing["consumables"]}
+            for item in updates:
+                name = item.get("name", "")
+                if not name:
+                    continue
+                if name in existing_names:
+                    existing_names[name].update(item)
                 else:
-                    existing["consumables"][key] = val
+                    existing["consumables"].append(item)
+                    existing_names[name] = item
 
     def merge(self, tenant_id: str, update: dict) -> dict:
         """增量合并 profile_update 到已有画像
@@ -160,7 +208,6 @@ class ProfileManager:
         规则:
           - devices: 按 model 去重，issues/usage/consumables 结构化合并
           - current_location: 覆盖（搬家则更新）
-          - locations: 去重追加（历史记录）
           - preferences: 浅合并
           - purchase_intent: 按 product 合并
           - service_history: 追加
@@ -189,17 +236,6 @@ class ProfileManager:
         # --- current_location ---
         if "current_location" in update and update["current_location"]:
             profile["current_location"] = update["current_location"]
-            loc = update["current_location"]
-            if loc not in set(profile.get("locations", [])):
-                profile.setdefault("locations", []).append(loc)
-
-        # --- locations (历史) ---
-        if "locations" in update and update["locations"]:
-            existing = set(profile.get("locations", []))
-            for loc in update["locations"]:
-                if loc and loc not in existing:
-                    profile["locations"].append(loc)
-                    existing.add(loc)
 
         # --- preferences ---
         if "preferences" in update and update["preferences"]:
@@ -224,8 +260,8 @@ class ProfileManager:
         if "service_history" in update and update["service_history"]:
             profile.setdefault("service_history", [])
             for entry in update["service_history"]:
-                if "date" not in entry:
-                    entry["date"] = _now()[:10]
+                entry.setdefault("service_time", _now()[:10])
+                entry.setdefault("resolved", False)
                 profile["service_history"].append(entry)
 
         # --- question_history ---
@@ -240,10 +276,9 @@ class ProfileManager:
 
         self.save(tenant_id, profile)
         logger.info(
-            "画像已更新: %s (devices=%d, locations=%d, questions=%d)",
+            "画像已更新: %s (devices=%d, questions=%d)",
             tenant_id,
             len(profile.get("devices", [])),
-            len(profile.get("locations", [])),
             len(profile.get("question_history", [])),
         )
         return profile

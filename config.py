@@ -85,6 +85,7 @@ ENABLE_MEMORY = True  # 启用 Agent 长期记忆
 MEMORY_COLLECTION = "agent_memories"  # ChromaDB collection 名称
 MEMORY_TOP_K = 4  # 每次召回记忆条数
 PROFILE_DIR = os.path.join(DATA_DIR, "profiles")  # 用户画像 JSON 文件目录
+SESSION_SUMMARY_ENABLED = os.getenv("SESSION_SUMMARY_ENABLED", "true").lower() == "true"  # 会话摘要异步写入 ChromaDB
 
 # ============ Streaming ============
 # "invoke" = 原有路径，节点完成后再 yield（安全、方便调试）

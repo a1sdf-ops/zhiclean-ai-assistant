@@ -1,7 +1,12 @@
-"""Agent 记忆管理器 —— 短期对话历史 + 长期语义记忆
+"""Agent 记忆管理器 —— 结构化画像 + 轻量向量兜底
 
-短期记忆：FileChatMessageHistory（已有，按 session 存对话 JSON）
-长期记忆：LLM 提取关键事实 → Embedding → ChromaDB 持久化 → 语义召回
+画像（权威事实源）：LLM 每轮提取 profile_update → 增量合并到 JSON 文件
+向量（兜底长尾）：会话结束时异步写入摘要到 ChromaDB，跨会话排障历史召回
+
+架构决策：
+- 旧 Redis 三层记忆（LLM 打分排序）已完全移除——消除记忆漂移、降低延迟
+- Per-round facts 不再写入 ChromaDB——画像的 question_history 已覆盖逐轮记录
+- ChromaDB 仅存 session summary，用于召回非结构化排障过程碎片
 """
 
 import json
@@ -17,42 +22,34 @@ import config
 from model.factory import create_chat_model, create_embedding_model
 from utils.logger_handler import logger
 
-MEMORY_EXTRACTION_PROMPT = """分析以下对话，提取两部分信息：
+MEMORY_EXTRACTION_PROMPT = """分析以下对话，提取用户画像更新（profile_update）。
 
-1. "facts": 对后续交互有价值的离散事实数组，每条包含：
-   - "fact": 事实描述（简明扼要，一句以内）
-   - "category": 类别（preference / identity / context / knowledge）
-   - "importance": 重要性 1-5（5=必须记住，1=顺便提及）
-   只提取用户相关的信息，不提取助手回答中的通用知识。没有则返回 []。
+**主动推断规则**：
+- 用户说"我的XX产品"、"XX怎么保养/使用/设置" → 推断拥有该设备，填写 devices
+- 用户说"搬到了/搬到/移居/搬家到/现在在 某城市" → 提取 current_location
+- 用户问产品对比、新品咨询 → 可能有意向，提取 purchase_intent
+- 用户提到维修/报修/换货/售后经历 → 提取 service_history
+- 用户问"最近XX怎么不行了"等持续性问题 → 推断问题未解决
 
-2. "profile_update": 用户画像更新。
-   **主动推断规则**：
-   - 用户说"我的XX产品"、"XX怎么保养/使用/设置" → 推断拥有该设备，填写 devices
-   - 用户说"搬到了/搬到/移居/搬家到/现在在 某城市" → 提取 current_location
-   - 用户问产品对比、新品咨询 → 可能有意向，提取 purchase_intent
-   - 用户提到维修/报修/换货/售后经历 → 提取 service_history
-   - 用户问"最近XX怎么不行了"等持续性问题 → 推断问题未解决
+**可提取字段**（只填写有实际依据的字段，不编造）：
+{{
+  "devices": [{{
+    "model": "产品型号",
+    "purchased": "购买日期(可选)",
+    "usage": {{"frequency": "每天一次", "primary_area": "客厅", "floor_type": "木地板", "has_pets": false}},
+    "issues": [{{"problem": "问题描述", "status": "未解决/已解决", "attempted_solutions": ["已尝试方案"]}}],
+    "consumables": [{{"name": "hepa_filter", "last_replaced": "2026-07", "cycle_days": 90}}]
+  }}],
+  "current_location": "当前居住城市",
+  "preferences": {{"receive_maintain_remind": true/false, "remind_time": "每周一/每月1号/..."}},
+  "purchase_intent": [{{"product": "产品名", "level": "高/中/低"}}],
+  "service_history": [{{"service_type": "上门维修/咨询/退换", "target_device": "设备型号", "service_time": "日期", "result": "服务结果", "resolved": true/false}}],
+  "question_entry": {{"category": "故障排查/保养维护/功能咨询/售后政策/耗材/产品对比/天气/闲聊", "device": "设备型号(可选)", "problem": "标准化问题描述(可选)", "query_summary": "一句话概括用户问题", "resolved": true/false}}
+}}
+如果本轮对话没有新的画像信息可提取，返回 {{"profile_update": null}}。
+question_entry 每轮对话必须提取，和其他字段独立。
 
-   **可提取字段**（只填写有实际依据的字段，不编造）：
-   {{
-     "devices": [{{
-       "model": "产品型号",
-       "purchased": "购买日期(可选)",
-       "usage": {{"frequency": "每天一次", "primary_area": "客厅", "floor_type": "木地板", "has_pets": false}},
-       "issues": [{{"problem": "问题描述", "status": "未解决/已解决", "attempted_solutions": ["已尝试方案"]}}],
-       "consumables": {{"hepa_filter": {{"last_replaced": "2026-07"}}, "side_brush": {{...}}, "main_brush": {{...}}, "mop_pad": {{...}}, "dust_bag": {{...}}}}
-     }}],
-     "current_location": "当前居住城市",
-     "locations": ["城市名(历史记录)"],
-     "preferences": {{"tech_level": "入门/进阶/专家", "reply_style": "简要/详细步骤/表格对比"}},
-     "purchase_intent": [{{"product": "产品名", "level": "高/中/低"}}],
-     "service_history": [{{"date": "日期", "type": "维修/咨询/退换", "device": "设备型号", "description": "简述"}}],
-     "question_entry": {{"category": "故障排查/保养维护/功能咨询/售后政策/耗材/产品对比/天气/闲聊", "device": "设备型号(可选)", "problem": "标准化问题描述(可选)", "query_summary": "一句话概括用户问题", "resolved": true/false}}
-   }}
-   如果本轮对话没有新的画像信息可提取，profile_update 为 null。
-   question_entry 每轮对话必须提取，和其他字段独立。
-
-返回 JSON：{{"facts": [...], "profile_update": {{...}} 或 null}}
+返回 JSON：{{"profile_update": {{...}} 或 null}}
 仅输出 JSON，不要其他内容。
 
 对话：
@@ -85,43 +82,16 @@ class MemoryManager:
 
     def save(
         self, user_msg: str, assistant_msg: str, session_id: str = "default", tenant_id: str = "default"
-    ) -> tuple[list[dict], dict | None]:
-        """从一轮对话中提取事实并持久化，返回 (事实列表, 画像更新)"""
-        if not self._enabled or self.store is None:
-            return [], None
+    ) -> dict | None:
+        """从一轮对话中提取画像更新并返回，不再写入 ChromaDB per-round facts"""
+        if not self._enabled:
+            return None
 
-        facts, profile_update = self._extract_facts(user_msg, assistant_msg)
-        if not facts and not profile_update:
-            return [], None
+        profile_update = self._extract_profile(user_msg, assistant_msg)
+        return profile_update
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        if facts:
-            texts, metadatas, ids = [], [], []
-            for i, f in enumerate(facts):
-                texts.append(f["fact"])
-                metadatas.append(
-                    {
-                        "tenant_id": tenant_id,
-                        "session_id": session_id,
-                        "category": f.get("category", "context"),
-                        "importance": f.get("importance", 3),
-                        "timestamp": timestamp,
-                        "source": "agent_memory",
-                    }
-                )
-                ids.append(f"mem_{tenant_id}_{session_id}_{timestamp.replace(':', '').replace(' ', '_')}_{i}")
-
-            try:
-                self.store.add_texts(texts, metadatas=metadatas, ids=ids)
-                logger.info("记忆已存储: %d 条 (tenant=%s session=%s)", len(facts), tenant_id, session_id)
-            except Exception as e:
-                logger.warning("记忆存储失败: %s", e)
-
-        return facts, profile_update
-
-    def _extract_facts(self, user_msg: str, assistant_msg: str) -> tuple[list[dict], dict | None]:
-        """用 LLM 从对话中提取关键事实 + 画像更新"""
+    def _extract_profile(self, user_msg: str, assistant_msg: str) -> dict | None:
+        """用 LLM 从对话中提取画像更新（不再提取 facts）"""
         raw = ""
         try:
             import time as _time
@@ -129,13 +99,10 @@ class MemoryManager:
             from agent.token_tracker import estimate_tokens, get_tracker
 
             model = create_chat_model(temperature=0.0)
-            # 用 replace 而非 .format()：助手的回答中可能包含 JSON
-            # （如 {"model": "Z2 Pro"}），.format() 会把花括号当占位符
             prompt = MEMORY_EXTRACTION_PROMPT.replace("{user_msg}", user_msg).replace("{assistant_msg}", assistant_msg)
             t0 = _time.time()
             response = model.invoke(prompt)
             latency = (_time.time() - t0) * 1000
-            # Token 埋点: 记忆提取
             get_tracker().record(
                 "llm_memory_extraction",
                 input_tokens=estimate_tokens(prompt),
@@ -150,19 +117,79 @@ class MemoryManager:
                     raw = raw[:-3]
             result = json.loads(raw)
 
-            facts = result.get("facts", []) if isinstance(result, dict) else []
             profile_update = result.get("profile_update") if isinstance(result, dict) else None
 
             logger.info(
-                "记忆提取LLM: %d 条事实, profile=%s | latency=%.0fms",
-                len(facts) if isinstance(facts, list) else 0,
+                "画像提取: profile=%s | latency=%.0fms",
                 "有" if profile_update else "无",
                 latency,
             )
-            return (facts if isinstance(facts, list) else []), profile_update
+            return profile_update
         except Exception as e:
-            logger.warning("记忆提取失败: %s | raw=%s", e, raw[:200] if raw else "(无输出)")
-            return [], None
+            logger.warning("画像提取失败: %s | raw=%s", e, raw[:200] if raw else "(无输出)")
+            return None
+
+    def save_session_summary(self, tenant_id: str, session_id: str,
+                             summary: str, metadata: dict = None) -> bool:
+        """会话结束时异步写入摘要到 ChromaDB，兜底跨会话排障历史碎片"""
+        if not self._enabled or self.store is None:
+            return False
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            doc_id = f"summary_{tenant_id}_{session_id}_{timestamp.replace(':', '').replace(' ', '_')}"
+            self.store.add_texts(
+                [summary],
+                metadatas=[{
+                    "tenant_id": tenant_id,
+                    "session_id": session_id,
+                    "type": "session_summary",
+                    "timestamp": timestamp,
+                    **(metadata or {}),
+                }],
+                ids=[doc_id],
+            )
+            logger.info("会话摘要已存储: tenant=%s session=%s", tenant_id, session_id)
+            return True
+        except Exception as e:
+            logger.warning("会话摘要存储失败: %s", e)
+            return False
+
+    def close_session(self, messages: list[str], tenant_id: str, session_id: str) -> str | None:
+        """用 LLM 生成会话摘要并写入 ChromaDB
+
+        messages: 用户和助手的交替对话文本列表，如 ["用户: 你好", "助手: 你好！...", ...]
+        返回: 生成的摘要文本，失败返回 None
+        """
+        if not self._enabled or self.store is None or not messages:
+            return None
+
+        conversation = "\n".join(messages)
+        summary_prompt = """分析以下售后对话，提取一份排障过程摘要，聚焦 **JSON 用户画像 schema 无法覆盖的碎片化细节**：
+
+- 维修/服务过程细节（师傅什么时候来、配件是否缺货、补发时间）
+- 故障的触发条件（"高温才复现""下雨天才出现"）
+- 用户提到的临时信息（"下个月要搬家""最近在装修"）
+- 未解决的遗留问题及原因
+- 客服给过的临时方案或承诺
+
+不要重复用户画像已有的结构化信息（设备型号、故障类型、城市等），只提取 schema 以外的排障过程碎片。
+用中文简明扼要，控制在 200 字以内。只输出摘要本身，不要加前缀。
+
+对话：
+""" + conversation
+
+        try:
+            model = create_chat_model(temperature=0.0)
+            response = model.invoke(summary_prompt)
+            summary = response.content.strip()
+            if summary:
+                self.save_session_summary(tenant_id, session_id, summary)
+                logger.info("会话摘要生成成功: %d 字 (session=%s)", len(summary), session_id)
+                return summary
+            return None
+        except Exception as e:
+            logger.warning("会话摘要生成失败: %s", e)
+            return None
 
     # ---------- 召回 ----------
 
@@ -199,10 +226,10 @@ class MemoryManager:
 
             lines = []
             for doc in docs:
-                importance = doc.metadata.get("importance", 3)
-                timestamp = doc.metadata.get("timestamp", "")
-                cat = doc.metadata.get("category", "")
-                lines.append(f"[重要性:{importance}] [{cat}] {doc.page_content}")
+                ts = doc.metadata.get("timestamp", "")
+                doc_type = doc.metadata.get("type", "")
+                prefix = "[会话摘要]" if doc_type == "session_summary" else ""
+                lines.append(f"{prefix} [{ts}] {doc.page_content}")
 
             logger.info("记忆召回: %d 条 (query=%s)", len(docs), query[:40])
             return "\n".join(lines)
@@ -236,8 +263,8 @@ class MemoryManager:
             data = self.store.get(include=["metadatas", "documents"], where=where)
             results = []
             for i, (text, meta) in enumerate(zip(data.get("documents", []), data.get("metadatas", []))):
-                results.append({"id": data["ids"][i], "fact": text, **meta})
-            return sorted(results, key=lambda x: x.get("importance", 0), reverse=True)
+                results.append({"id": data["ids"][i], "content": text, **meta})
+            return sorted(results, key=lambda x: x.get("timestamp", ""), reverse=True)
         except Exception as e:
             logger.warning("列出记忆失败: %s", e)
             return []

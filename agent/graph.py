@@ -125,14 +125,6 @@ def _parse_intent_response(raw: str) -> dict:
         return {"intent": "general", "tool_args": {}, "is_report": False}
 
 
-# 耗材推荐更换周期（月），来自保养维护指南
-_CONSUMABLE_CYCLE = {
-    "hepa_filter": (1, 2),
-    "side_brush": (3, 4),
-    "main_brush": (6, 8),
-    "mop_pad": (3, 3),
-    "dust_bag": (2, 3),
-}
 _CONSUMABLE_LABEL = {
     "hepa_filter": "HEPA滤网",
     "side_brush": "边刷",
@@ -150,12 +142,8 @@ def _format_profile(profile: dict) -> str:
 
     # ── 当前城市 ──
     current_loc = profile.get("current_location", "")
-    locations = profile.get("locations", [])
     if current_loc:
-        history_note = f"（历史: {', '.join(locations)}）" if len(locations) > 1 else ""
-        lines.append(f"  当前城市: {current_loc} {history_note}".rstrip())
-    elif locations:
-        lines.append(f"  当前城市: {locations[-1]}")
+        lines.append(f"  当前城市: {current_loc}")
 
     # ── 设备 ──
     devices = profile.get("devices", [])
@@ -201,15 +189,17 @@ def _format_profile(profile: dict) -> str:
                         lines.append(s)
 
             # 耗材
-            consumables = d.get("consumables", {})
+            consumables = d.get("consumables", [])
             if consumables:
                 lines.append("      耗材:")
-                for key, val in consumables.items():
-                    label = _CONSUMABLE_LABEL.get(key, key)
-                    last = val.get("last_replaced", "?")
-                    cycle = _CONSUMABLE_CYCLE.get(key)
-                    if cycle:
-                        lines.append(f"        - {label}: 上次更换 {last}（建议每{cycle[0]}-{cycle[1]}个月）")
+                for c in consumables:
+                    name = c.get("name", "")
+                    label = _CONSUMABLE_LABEL.get(name, name)
+                    last = c.get("last_replaced", "?")
+                    cycle_days = c.get("cycle_days")
+                    if cycle_days:
+                        cycle_months = (cycle_days // 30, (cycle_days // 30) + 1)
+                        lines.append(f"        - {label}: 上次更换 {last}（建议每{cycle_months[0]}-{cycle_months[1]}个月）")
                     else:
                         lines.append(f"        - {label}: 上次更换 {last}")
 
@@ -217,13 +207,11 @@ def _format_profile(profile: dict) -> str:
     prefs = profile.get("preferences", {})
     if prefs:
         p = []
-        tech = prefs.get("tech_level", "")
-        if tech:
-            p.append(f"技术水平: {tech}")
-        style = prefs.get("reply_style", "")
-        if style:
-            p.append(f"回复偏好: {style}")
-        other = {k: v for k, v in prefs.items() if k not in ("tech_level", "reply_style")}
+        if prefs.get("receive_maintain_remind"):
+            remind_time = prefs.get("remind_time", "")
+            remind_str = f"接受保养提醒, {remind_time}" if remind_time else "接受保养提醒"
+            p.append(remind_str)
+        other = {k: v for k, v in prefs.items() if k not in ("receive_maintain_remind", "remind_time")}
         for k, v in other.items():
             p.append(f"{k}: {v}")
         if p:
@@ -240,7 +228,13 @@ def _format_profile(profile: dict) -> str:
     if service_history:
         lines.append("  售后记录:")
         for sh in service_history[-3:]:
-            lines.append(f"    - [{sh.get('date', '?')}] {sh.get('type', '?')}: {sh.get('description', '')}")
+            svc_type = sh.get("service_type", sh.get("type", "?"))
+            svc_time = sh.get("service_time", sh.get("date", "?"))
+            device = sh.get("target_device", sh.get("device", ""))
+            device_str = f"({device})" if device else ""
+            result = sh.get("result", sh.get("description", ""))
+            resolved = "✓" if sh.get("resolved") else ""
+            lines.append(f"    - [{svc_time}] {svc_type}{device_str}: {result} {resolved}".rstrip())
 
     # ── 历史提问 ──
     question_history = profile.get("question_history", [])
@@ -290,7 +284,7 @@ def recall_memory(state: AgentState) -> dict:
 
     # ── 2. ChromaDB 语义记忆（向量召回）──
     memory = get_memory()
-    semantic_ctx = memory.recall(query, session_id=session_id, tenant_id=tenant_id)
+    semantic_ctx = memory.recall(query, tenant_id=tenant_id)  # 不传 session_id，跨会话召回摘要
     if semantic_ctx:
         context_parts.append(f"[语义记忆]\n{semantic_ctx}")
 
@@ -584,11 +578,10 @@ def generate_final_answer(state: AgentState) -> dict:
 
 
 def save_memory(state: AgentState) -> dict:
-    """节点: 三层持久化记忆存储
+    """节点: 画像持久化存储
 
-    1. Redis Hash   → 短期会话上下文（最近N轮，72h TTL）
-    2. ChromaDB     → 长期语义记忆（LLM提取事实 → Embedding → 向量检索）原有逻辑
-    3. Redis Sorted Set → 长期偏好记忆（带权重衰减，用于快速TopK查询）
+    LLM 提取 profile_update → 增量合并到 {tenant_id}.json。
+    Per-round facts 不再写入 ChromaDB，会话摘要由外部触发异步写入。
     """
     user_query = state.get("user_query", "")
     session_id = state.get("session_id", "default")
@@ -600,29 +593,26 @@ def save_memory(state: AgentState) -> dict:
         last = last_msgs[-1]
         assistant_msg = last.content if hasattr(last, "content") else str(last)
 
-    saved_facts = []
     if user_query and assistant_msg:
         try:
             memory = get_memory()
-            saved_facts, profile_update = memory.save(
+            profile_update = memory.save(
                 user_query,
                 assistant_msg,
                 session_id=session_id,
                 tenant_id=tenant_id,
             )
         except Exception as e:
-            logger.warning("ChromaDB 记忆存储失败: %s", e)
+            logger.warning("画像提取失败: %s", e)
+            profile_update = None
 
-    # ── 画像增量合并 ──
-    if profile_update:
-        try:
-            profile_mgr = ProfileManager()
-            profile_mgr.merge(tenant_id, profile_update)
-        except Exception as e:
-            logger.warning("画像更新失败: %s", e)
-
-    if saved_facts:
-        logger.info("记忆已提取: %d 条事实 (session=%s)", len(saved_facts), session_id)
+        # ── 画像增量合并 ──
+        if profile_update:
+            try:
+                profile_mgr = ProfileManager()
+                profile_mgr.merge(tenant_id, profile_update)
+            except Exception as e:
+                logger.warning("画像更新失败: %s", e)
 
     return {}
 

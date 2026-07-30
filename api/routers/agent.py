@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 import config
 from agent.token_tracker import get_tracker
 from api.dependencies import get_agent
-from api.schemas.agent import AgentChatRequest, AgentChatResponse
+from api.schemas.agent import AgentChatRequest, AgentChatResponse, SessionCloseRequest, SessionCloseResponse
 
 router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
 
@@ -83,3 +83,18 @@ async def get_cost_report(
         "current_session": {k: v for k, v in session_report.items() if k != "__total__"},
         "session_total": session_report.get("__total__", {}),
     }
+
+
+@router.post("/session/close", response_model=SessionCloseResponse)
+async def close_session(req: SessionCloseRequest, agent=Depends(get_agent)):
+    """关闭会话，触发 LLM 生成排障过程摘要并写入 ChromaDB
+
+    前端在用户离开对话时调用。摘要聚焦 JSON 画像 schema 外的碎片化排障细节。
+    """
+    if not req.messages:
+        return SessionCloseResponse(success=False, summary=None, summary_length=0)
+
+    summary = agent.close_session(req.messages, req.session_id, req.tenant_id)
+    if summary:
+        return SessionCloseResponse(success=True, summary=summary, summary_length=len(summary))
+    return SessionCloseResponse(success=False, summary=None, summary_length=0)

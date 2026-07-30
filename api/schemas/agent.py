@@ -12,3 +12,15 @@ class AgentChatRequest(BaseModel):
 class AgentChatResponse(BaseModel):
     answer: str = Field(..., description="Agent 的最终回答")
     mode: str = Field(default="stream", description="执行模式: stream / async")
+
+
+class SessionCloseRequest(BaseModel):
+    session_id: str = Field(..., description="会话标识")
+    tenant_id: str = Field(default="", description="租户标识，为空时自动从 session_id 派生")
+    messages: list[str] = Field(..., description="完整对话文本列表，格式: ['用户: ...', '助手: ...']")
+
+
+class SessionCloseResponse(BaseModel):
+    success: bool = Field(..., description="是否成功")
+    summary: str | None = Field(default=None, description="生成的会话摘要")
+    summary_length: int = Field(default=0, description="摘要字数")
