@@ -1,13 +1,14 @@
 """端到端记忆测试脚本 —— 跑 4 轮对话 + close_session + 跨会话召回"""
+import hashlib
 import json
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
 
 BASE = "http://localhost:8000/api/v1/agent"
-import hashlib
 
 SESSION = "e2e_test_session"
 TENANT = f"tenant_{hashlib.md5(SESSION.encode()).hexdigest()[:12]}"  # 固定 tenant，跨 session 共用
@@ -96,7 +97,7 @@ print(f"  → {resp.json().get('answer', '')[:200]}")
 
 print("\n" + "=" * 50)
 print("测试完成。检查:")
-print(f"  1. data/profiles/ 下的 JSON 结构是否完整")
-print(f"  2. 日志中 Round 5 的 '记忆召回' 是否 semantic=有")
-print(f"  3. Agent 回答是否能接上'配件缺货下周补发'的上下文")
+print("  1. data/profiles/ 下的 JSON 结构是否完整")
+print("  2. 日志中 Round 5 的 '记忆召回' 是否 semantic=有")
+print("  3. Agent 回答是否能接上'配件缺货下周补发'的上下文")
 print("=" * 50)
