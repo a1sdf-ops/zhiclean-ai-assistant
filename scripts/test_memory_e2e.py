@@ -1,4 +1,5 @@
 """端到端记忆测试脚本 —— 跑 4 轮对话 + close_session + 跨会话召回"""
+
 import hashlib
 import json
 import os
@@ -15,25 +16,34 @@ TENANT = f"tenant_{hashlib.md5(SESSION.encode()).hexdigest()[:12]}"  # 固定 te
 
 messages = []  # 收集完整对话，给 close_session 用
 
+
 def chat(query: str, session_id: str = None):
-    resp = requests.post(f"{BASE}/chat", json={
-        "query": query,
-        "session_id": session_id or SESSION,
-        "tenant_id": TENANT,
-    })
+    resp = requests.post(
+        f"{BASE}/chat",
+        json={
+            "query": query,
+            "session_id": session_id or SESSION,
+            "tenant_id": TENANT,
+        },
+    )
     data = resp.json()
     answer = data.get("answer", "")
     messages.append(f"用户: {query}")
     messages.append(f"助手: {answer}")
     return answer
 
+
 def close():
-    resp = requests.post(f"{BASE}/session/close", json={
-        "session_id": SESSION,
-        "tenant_id": TENANT,
-        "messages": messages,
-    })
+    resp = requests.post(
+        f"{BASE}/session/close",
+        json={
+            "session_id": SESSION,
+            "tenant_id": TENANT,
+            "messages": messages,
+        },
+    )
     return resp.json()
+
 
 # ── Round 1: 新用户 ──
 print("=" * 50)
@@ -77,7 +87,7 @@ print("关闭会话，生成 ChromaDB 摘要")
 print("=" * 50)
 result = close()
 print(f"  success={result.get('success')}, summary_length={result.get('summary_length')}")
-if result.get('summary'):
+if result.get("summary"):
     print(f"  摘要: {result['summary']}")
 
 input("按回车开始跨会话召回测试...")
@@ -88,11 +98,14 @@ print("\n" + "=" * 50)
 print("Round 5: 新 session 跨会话召回")
 print("=" * 50)
 
-resp = requests.post(f"{BASE}/chat", json={
-    "query": "上次说的那个配件补发到了吗，吸力问题还在",
-    "session_id": SESSION_CROSS,
-    "tenant_id": TENANT,  # 同一个 tenant，跨 session 复用画像 + ChromaDB 摘要
-})
+resp = requests.post(
+    f"{BASE}/chat",
+    json={
+        "query": "上次说的那个配件补发到了吗，吸力问题还在",
+        "session_id": SESSION_CROSS,
+        "tenant_id": TENANT,  # 同一个 tenant，跨 session 复用画像 + ChromaDB 摘要
+    },
+)
 print(f"  → {resp.json().get('answer', '')[:200]}")
 
 print("\n" + "=" * 50)

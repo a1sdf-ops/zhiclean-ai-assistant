@@ -129,8 +129,7 @@ class MemoryManager:
             logger.warning("画像提取失败: %s | raw=%s", e, raw[:200] if raw else "(无输出)")
             return None
 
-    def save_session_summary(self, tenant_id: str, session_id: str,
-                             summary: str, metadata: dict = None) -> bool:
+    def save_session_summary(self, tenant_id: str, session_id: str, summary: str, metadata: dict = None) -> bool:
         """会话结束时异步写入摘要到 ChromaDB，兜底跨会话排障历史碎片"""
         if not self._enabled or self.store is None:
             return False
@@ -139,13 +138,15 @@ class MemoryManager:
             doc_id = f"summary_{tenant_id}_{session_id}_{timestamp.replace(':', '').replace(' ', '_')}"
             self.store.add_texts(
                 [summary],
-                metadatas=[{
-                    "tenant_id": tenant_id,
-                    "session_id": session_id,
-                    "type": "session_summary",
-                    "timestamp": timestamp,
-                    **(metadata or {}),
-                }],
+                metadatas=[
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "type": "session_summary",
+                        "timestamp": timestamp,
+                        **(metadata or {}),
+                    }
+                ],
                 ids=[doc_id],
             )
             logger.info("会话摘要已存储: tenant=%s session=%s", tenant_id, session_id)
@@ -164,7 +165,8 @@ class MemoryManager:
             return None
 
         conversation = "\n".join(messages)
-        summary_prompt = """分析以下售后对话，提取一份排障过程摘要，聚焦 **JSON 用户画像 schema 无法覆盖的碎片化细节**：
+        summary_prompt = (
+            """分析以下售后对话，提取一份排障过程摘要，聚焦 **JSON 用户画像 schema 无法覆盖的碎片化细节**：
 
 - 维修/服务过程细节（师傅什么时候来、配件是否缺货、补发时间）
 - 故障的触发条件（"高温才复现""下雨天才出现"）
@@ -176,7 +178,9 @@ class MemoryManager:
 用中文简明扼要，控制在 200 字以内。只输出摘要本身，不要加前缀。
 
 对话：
-""" + conversation
+"""
+            + conversation
+        )
 
         try:
             model = create_chat_model(temperature=0.0)

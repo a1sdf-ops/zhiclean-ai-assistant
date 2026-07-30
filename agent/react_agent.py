@@ -91,9 +91,11 @@ class ReactAgent:
         """
         if not tenant_id:
             import hashlib
+
             tenant_id = f"tenant_{hashlib.md5(session_id.encode()).hexdigest()[:12]}"
 
         from agent.graph import get_memory
+
         memory = get_memory()
         return memory.close_session(messages, tenant_id, session_id)
 

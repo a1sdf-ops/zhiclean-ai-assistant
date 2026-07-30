@@ -108,7 +108,9 @@ if len(token_times) > 1:
         fast_ratio > 0.8,
         f"fast_interval_ratio={fast_ratio:.1%}",
     )
-    print(f"  Token 间隔统计: min={min(intervals)*1000:.0f}ms max={max(intervals)*1000:.0f}ms mean={sum(intervals)/len(intervals)*1000:.0f}ms")
+    print(
+        f"  Token 间隔统计: min={min(intervals) * 1000:.0f}ms max={max(intervals) * 1000:.0f}ms mean={sum(intervals) / len(intervals) * 1000:.0f}ms"
+    )
 
 if first_token_time:
     print(f"  [INFO] 首 token 在 {ttft:.1f}s 出现，之后 {total - ttft:.1f}s 内流式输出剩余 {len(tokens) - 1} tokens")
@@ -167,13 +169,21 @@ print(f"  回答: {a4[:120]}...")
 # 检查回答是否引用了画像上下文
 combined_lower = a4.lower()
 check("回答提到'上海'", "上海" in a4, "回答应引用画像中的城市")
-check("回答提到'Z3 Ultra'", "z3" in combined_lower and ("ultra" in combined_lower or "ultra" in combined_lower), "回答应引用画像中的设备")
+check(
+    "回答提到'Z3 Ultra'",
+    "z3" in combined_lower and ("ultra" in combined_lower or "ultra" in combined_lower),
+    "回答应引用画像中的设备",
+)
 check("回答提到'瓷砖'或'卧室'", "瓷砖" in a4 or "卧室" in a4 or "地板" in a4, "回答应引用使用场景")
 
 # 验证画像文件
 if PROFILE_FILE.exists():
     profile = json.loads(PROFILE_FILE.read_text(encoding="utf-8"))
-    check("current_location = 上海", profile.get("current_location") == "上海", f"actual={profile.get('current_location')}")
+    check(
+        "current_location = 上海",
+        profile.get("current_location") == "上海",
+        f"actual={profile.get('current_location')}",
+    )
     devices = profile.get("devices", [])
     check("有设备记录", len(devices) > 0, f"devices={len(devices)}")
     if devices:

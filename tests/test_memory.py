@@ -80,7 +80,8 @@ class TestMemoryExtraction:
 
         # 写入会话摘要，然后召回
         m.save_session_summary(
-            "default", session,
+            "default",
+            session,
             summary="张伟是软件工程师，做后端开发，使用Python和Go",
         )
         recalled = m.recall("张伟是做什么的", session_id=session)

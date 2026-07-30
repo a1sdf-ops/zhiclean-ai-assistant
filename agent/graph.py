@@ -199,7 +199,9 @@ def _format_profile(profile: dict) -> str:
                     cycle_days = c.get("cycle_days")
                     if cycle_days:
                         cycle_months = (cycle_days // 30, (cycle_days // 30) + 1)
-                        lines.append(f"        - {label}: 上次更换 {last}（建议每{cycle_months[0]}-{cycle_months[1]}个月）")
+                        lines.append(
+                            f"        - {label}: 上次更换 {last}（建议每{cycle_months[0]}-{cycle_months[1]}个月）"
+                        )
                     else:
                         lines.append(f"        - {label}: 上次更换 {last}")
 
