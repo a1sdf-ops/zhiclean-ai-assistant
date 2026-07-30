@@ -13,11 +13,11 @@ An intelligent after-sales service platform for the smart home brand "ZhiClean",
 
 ## Highlights
 
-- **12-node LangGraph StateGraph** — intent classification → 7-way routing → tool execution → answer generation → memory persistence
-- **User profile system** — 8-field structured JSON profile per tenant (devices with issues/usage/consumables, location tracking, purchase intent, service history, question history)
-- **2-layer agent memory** — ChromaDB semantic memory (vector recall) + JSON user profile (O(1) full load); deterministic code-based merge, no LLM scoring drift
+- **12-node LangGraph StateGraph** — intent classification → 7-way routing → tool execution → answer generation → profile persistence
+- **User profile system** — 8-field structured JSON profile per tenant (devices with issues/usage/consumables, location tracking, purchase intent, service history, question history); deterministic code-based merge, no LLM scoring drift
+- **2-layer agent memory** — ChromaDB semantic memory (session summaries, vector recall) + JSON user profile (O(1) full load); session-end summary via dedicated LLM prompt
 - **BM25 + Vector hybrid RAG** — hand-written BM25 sparse retrieval, RRF fusion, BGE-Reranker re-ranking; 17-question evaluation: 0% hallucination, 100% honest on out-of-domain queries
-- **Token-level SSE streaming** — `astream_events` captures real LLM tokens, not node-level chunks
+- **Token-level SSE streaming** — `astream_events` captures real LLM tokens (verified: 155 tokens, TTFT 4.9s); default to invoke due to pre-processing latency bottleneck
 - **Latency optimized** — merged dual-LLM bottleneck in RAG path, average response 22s → 12s (↓46%)
 - **Full observability** — trace_id per request, per-module token & latency tracking, structured logging (1.7MB → 3.4KB noise reduction)
 - **Cross-language MCP** — Go weather server + Python knowledge server, JSON-RPC over stdio
@@ -44,8 +44,8 @@ User ─────────────────────────
 │                                               (LLM: ~6.6s avg)           │
 │                                                     │                    │
 │                                               save_memory ──► END        │
-│                                               (LLM: extract facts        │
-│                                                + profile_update)         │
+│                                               (LLM: profile_update       │
+│                                                only, no per-round facts) │
 └───────────────────┬───────────────────────────────────┘
                     │
           ┌─────────┼─────────┐
@@ -86,26 +86,32 @@ Each tenant gets a structured JSON profile (`data/profiles/{tenant_id}.json`) th
 {
   "devices": [{
     "model": "Z3 Ultra",
-    "issues": [{"problem": "吸力变小", "status": "未解决", "attempted_solutions": []}],
-    "consumables": {"hepa_filter": {"last_replaced": null}},
-    "usage": {"frequency": "每天一次", "primary_area": "客厅", "floor_type": "木地板"}
+    "issues": [{"problem": "吸力变小", "status": "未解决", "attempted_solutions": ["上门检测，配件缺货待补发"]}],
+    "consumables": [{"name": "hepa_filter", "last_replaced": "2026-07", "cycle_days": 90}],
+    "usage": {"frequency": "每天一次", "primary_area": "客厅", "floor_type": "木地板", "has_pets": false}
   }],
   "current_location": "深圳",
-  "locations": ["北京", "深圳"],
-  "purchase_intent": [{"product": "Z3 Ultra", "level": "高"}],
+  "purchase_intent": [{"product": "Z3 Ultra", "level": "高", "last_asked": "2026-07-30"}],
   "question_history": [
-    {"category": "故障排查", "device": "Z3 Ultra", "problem": "吸力变小", "query_summary": "吸力变小怎么处理", "resolved": false}
+    {"category": "故障排查", "device": "Z3 Ultra", "problem": "吸力变小", "query_summary": "吸力变小怎么处理", "resolved": false, "date": "2026-07-30"}
   ],
-  "service_history": [],
-  "preferences": {}
+  "service_history": [{
+    "service_type": "上门维修", "target_device": "Z3 Ultra", "service_time": "周三",
+    "result": "确认配件缺货，需下周补发", "resolved": false
+  }],
+  "preferences": {"receive_maintain_remind": true, "remind_time": "每周一上午9点"},
+  "updated_at": "2026-07-30 10:00:00",
+  "created_at": "2026-07-30 08:00:00"
 }
 ```
 
 **Key design decisions:**
 - **LLM active inference** — extracts structured data from natural language (e.g. "搬到深圳" → `current_location` overwrite, "我的Z3 Ultra" → device ownership)
-- **Code-only merge** — deterministic, no LLM scoring drift; issues merge by problem name, usage dict-update, consumables per-key merge
+- **Code-only merge** — deterministic, no LLM scoring drift; issues merge by problem name, consumables merged by name, usage dict-update
 - **question_history** — FIFO queue (100 item limit), LLM extracts one entry per round, code appends; injected into system prompt as summary stats + last 5 items
+- **Session summaries** — on session close, dedicated LLM prompt extracts troubleshooting fragments (repair details, trigger conditions, unresolved issues, promises) and writes to ChromaDB for cross-session recall
 - **tenant_id** = `MD5(session_id)[:12]` — stable within session, no random drift
+- **No per-round facts in ChromaDB** — structured facts live in JSON profile (`question_history`), ChromaDB only stores session-end summaries to avoid redundancy
 
 ## Quick Start
 
@@ -150,6 +156,7 @@ Visit `http://localhost:8000/health` — you should see `{"status": "ok"}`.
 | `POST` | `/api/v1/agent/stream` | Streaming agent dialogue (SSE, token-level) |
 | `POST` | `/api/v1/agent/invoke` | Full async response (testing) |
 | `POST` | `/api/v1/agent/chat` | Agent chat (non-streaming) |
+| `POST` | `/api/v1/agent/session/close` | Close session (LLM summary → ChromaDB) |
 | `POST` | `/api/v1/rag/stream` | RAG search streaming (SSE) |
 | `POST` | `/api/v1/rag/query` | RAG search non-streaming |
 | `POST` | `/api/v1/knowledge/upload` | Upload text to knowledge base |
@@ -189,7 +196,7 @@ The original RAG path had **two LLM calls doing the same thing**: the handler LL
 - Intent classification (qwen-plus): ~970ms
 - Handler retrieval (no LLM): <1s
 - Answer generation (qwen-plus): ~6.6s (now the primary bottleneck)
-- Memory extraction (qwen-plus): ~1.2s (post-response, not user-facing)
+- Profile extraction (qwen-plus): ~1.2s (post-response, not user-facing)
 
 ## Retrieval Evaluation
 
@@ -257,15 +264,16 @@ A comprehensive test suite covering all 7 intent handlers + 2 adversarial tests:
 │   └── factory.py             # LLM / Embedding factory (DashScope + OpenAI)
 ├── utils/                     # Shared utilities
 │   ├── profile.py             # JSON user profile manager (load/merge/save, per tenant)
-│   ├── memory.py              # ChromaDB semantic memory (LLM fact extraction + vector recall)
+│   ├── memory.py              # ChromaDB semantic memory (LLM profile extraction + session summary)
 │   ├── logger_handler.py      # Structured logging (whitelist + explicit suppression, daily rotation)
 │   └── weather_service.py     # QWeather API (Python fallback)
 ├── scripts/
-│   └── export_trace.py        # Log analysis: extract trace by ID, latency breakdown, daily summary
+│   ├── export_trace.py         # Log analysis: extract trace by ID, latency breakdown, daily summary
+│   ├── test_memory_e2e.py      # E2E memory test (6 rounds: profile + cross-session recall)
+│   └── verify_stream_and_profile.py  # SSE streaming + profile joint verification
 ├── data/                      # Runtime data (gitignored)
 │   ├── profiles/              # JSON user profiles ({tenant_id}.json)
-│   ├── chroma_db/             # ChromaDB knowledge base vectors
-│   ├── memory_db/             # ChromaDB semantic memory vectors
+│   ├── chroma_db/             # ChromaDB vectors (knowledge base + agent memories)
 │   ├── token_usage.db         # Token cost tracking (SQLite)
 │   └── logs/                  # Daily rotating logs (365-day retention)
 ├── docs/                      # Knowledge base source documents (×5)
@@ -294,7 +302,7 @@ A comprehensive test suite covering all 7 intent handlers + 2 adversarial tests:
 | Agent Framework | LangGraph StateGraph | Custom 12-node DAG, compile-time routing |
 | RAG Chain | LangChain LCEL | Streaming + non-streaming dual chain |
 | Vector DB | ChromaDB | Local persistence, zero infra dependency |
-| Memory / Profile | JSON file + ChromaDB | Profile: per-tenant JSON (8-field structured); Semantic: ChromaDB vector recall |
+| Memory / Profile | JSON file + ChromaDB | Profile: per-tenant JSON (8-field structured); Semantic: ChromaDB session summaries |
 | Sparse Retrieval | BM25 (hand-written) | jieba tokenizer, inverted index, IDF smoothing |
 | Fusion | RRF (Reciprocal Rank Fusion) | k=60, rank-based, score-distribution-agnostic |
 | Re-ranker | BGE-Reranker v2-m3 | Cross-Encoder, CPU inference |
